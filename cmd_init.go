@@ -11,14 +11,14 @@ import (
 func cmdInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	adopt := fs.String("key", "", "adopt a key you were given: the word list, or the base32 key")
-	useWords := fs.Bool("words", false, "make a key and show it as 8 words")
+	useRaw := fs.Bool("raw", false, "make a key and show it as base32")
 	usePass := fs.Bool("passphrase", false, "derive the key from a passphrase you type on every machine")
 	force := fs.Bool("force", false, "replace an existing key")
 	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), `usage: woosh init [--words | --passphrase | --key KEY] [--force]
+		fmt.Fprint(fs.Output(), `usage: woosh init [--raw | --passphrase | --key KEY] [--force]
 
-  woosh init               a random key, shown as base32
-  woosh init --words       a random key, shown as 8 words to type elsewhere
+  woosh init               a random key, shown as 8 words to type elsewhere
+  woosh init --raw         a random key, shown as base32
   woosh init --passphrase  the same passphrase on every machine, nothing to copy
   woosh init --key KEY     adopt a key, as words or as base32
 
@@ -30,13 +30,13 @@ func cmdInit(args []string) error {
 	}
 
 	chosen := 0
-	for _, on := range []bool{*adopt != "", *useWords, *usePass} {
+	for _, on := range []bool{*adopt != "", *useRaw, *usePass} {
 		if on {
 			chosen++
 		}
 	}
 	if chosen > 1 {
-		return errors.New("choose one of --words, --passphrase and --key")
+		return errors.New("choose one of --raw, --passphrase and --key")
 	}
 
 	path, err := keyPath()
@@ -59,13 +59,13 @@ func cmdInit(args []string) error {
 	case *usePass:
 		key, err = initFromPassphrase()
 
-	case *useWords:
+	case *useRaw:
+		key, err = newKey()
+
+	default:
 		if words, err = newMnemonic(); err == nil {
 			key, err = keyFromWords(words)
 		}
-
-	default:
-		key, err = newKey()
 	}
 	if err != nil {
 		return err
@@ -82,15 +82,15 @@ func cmdInit(args []string) error {
 	case *usePass:
 		fmt.Println("\nrun \"woosh init --passphrase\" on your other machines")
 		fmt.Println("and type the same passphrase. There is nothing to copy.")
-	case *useWords:
+	case *useRaw:
+		fmt.Printf("\n  %s\n\n", encodeKey(key))
+		fmt.Println("run \"woosh init --key <that key>\" on your other machines.")
+		fmt.Println("keep it secret: it is the only thing that guards a transfer.")
+	default:
 		fmt.Printf("\n%s\n", formatMnemonic(words))
 		fmt.Println("type these on your other machines:")
 		fmt.Printf("  woosh init --key \"%s\"\n", strings.Join(words, " "))
 		fmt.Println("\nkeep them secret: they are the only thing that guards a transfer.")
-	default:
-		fmt.Printf("\n  %s\n\n", encodeKey(key))
-		fmt.Println("run \"woosh init --key <that key>\" on your other machines.")
-		fmt.Println("keep it secret: it is the only thing that guards a transfer.")
 	}
 	return nil
 }

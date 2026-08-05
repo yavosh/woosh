@@ -31,6 +31,20 @@ Go 1.26 or later. Woosh has no dependencies outside the standard library.
 Every machine in your woosh network shares one key. Pick whichever of these three suits you.
 They are three ways to reach the same 32-byte key, not three kinds of key.
 
+**Eight words, to read out or type over.** This is what plain `woosh init` gives. Easier to
+get right than 52 base32 characters:
+
+```
+$ woosh init
+network key saved to /Users/you/.config/woosh/key
+
+  oak depend diary forum
+  ill become become lawsuit
+
+type these on your other machines:
+  woosh init --key "oak depend diary forum ill become become lawsuit"
+```
+
 **A passphrase, with nothing to copy.** Run the same command on every machine and type the
 same phrase:
 
@@ -48,23 +62,10 @@ network key saved to /Users/you/.config/woosh/key
 The phrase never leaves the machine and is never stored. What is typed does not appear on
 screen. Woosh asks twice, because a typo here gives you a key nobody else can reach.
 
-**Eight words, to read out or type over.** Easier to get right than 52 base32 characters:
-
-```
-$ woosh init --words
-network key saved to /Users/you/.config/woosh/key
-
-  oak depend diary forum
-  ill become become lawsuit
-
-type these on your other machines:
-  woosh init --key "oak depend diary forum ill become become lawsuit"
-```
-
 **The base32 key**, which is what a password manager or a config-management tool wants:
 
 ```
-$ woosh init
+$ woosh init --raw
   WSH-PDAL-FKTV-CSZN-...
 $ woosh init --key WSH-PDAL-FKTV-CSZN-...   # on the others
 ```
@@ -84,9 +85,9 @@ $ echo "$PHRASE" | woosh init --passphrase
 
 |  | Nothing to copy | Strength | Good for |
 |---|---|---|---|
+| words (the default) | no, 8 words | 88 bits | reading down a phone, typing on a laptop |
 | `--passphrase` | yes | as strong as the phrase | machines you set up by hand |
-| `--words` | no, 8 words | 88 bits | reading down a phone, typing on a laptop |
-| base32 | no, 52 characters | 256 bits | password managers, scripts, config management |
+| `--raw` | no, 52 characters | 256 bits | password managers, scripts, config management |
 
 A passphrase is stretched with PBKDF2-HMAC-SHA256 at 4,000,000 rounds. The salt has to be a
 constant, or two machines could never agree from the phrase alone, so that round count is the
@@ -147,7 +148,7 @@ need the code for that.
 | Flag | Command | What it does |
 |---|---|---|
 | `--passphrase` | init | derive the key from a phrase typed on every machine |
-| `--words` | init | make a key and show it as 8 words |
+| `--raw` | init | make a key and show it as base32 instead of words |
 | `--key` | init | adopt a key, as words or as base32 |
 | `--force` | init | replace a key that is already there |
 | `--code` | send | use a code you choose |

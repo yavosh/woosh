@@ -45,7 +45,7 @@ func captureStdout(t *testing.T, fn func() error) (string, error) {
 func TestInitWritesABase32Key(t *testing.T) {
 	tempHome(t)
 
-	printed, err := captureStdout(t, func() error { return cmdInit(nil) })
+	printed, err := captureStdout(t, func() error { return cmdInit([]string{"--raw"}) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,11 +63,12 @@ func TestInitWritesABase32Key(t *testing.T) {
 }
 
 // TestInitWordsReachTheSameKey is the point of the feature: read the words off
-// one machine, type them on another, and both end up on the same key.
+// one machine, type them on another, and both end up on the same key. Words are
+// what plain "woosh init" gives.
 func TestInitWordsReachTheSameKey(t *testing.T) {
 	tempHome(t)
 
-	printed, err := captureStdout(t, func() error { return cmdInit([]string{"--words"}) })
+	printed, err := captureStdout(t, func() error { return cmdInit(nil) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,8 +126,8 @@ func TestInitRejectsTwoModes(t *testing.T) {
 	tempHome(t)
 
 	pairs := [][]string{
-		{"--words", "--passphrase"},
-		{"--words", "--key", "abandon ability able about above absent absorb abstract"},
+		{"--raw", "--passphrase"},
+		{"--raw", "--key", "abandon ability able about above absent absorb abstract"},
 		{"--passphrase", "--key", "abandon ability able about above absent absorb abstract"},
 	}
 	for _, args := range pairs {
