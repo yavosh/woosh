@@ -4,37 +4,79 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: '1.26'
 
 jobs:
+  # Build and test on every platform woosh is used on. The gates come from the
+  # Makefile, so "make check" locally runs the same things CI does.
   test:
+    name: test ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
-          go-version: '1.26'
-
-      - name: gofmt
-        run: |
-          unformatted=$(gofmt -l .)
-          if [ -n "$unformatted" ]; then
-            echo "these files need gofmt:"
-            echo "$unformatted"
-            exit 1
-          fi
-
-      - name: vet
-        run: go vet ./...
-
-      # -short skips the tests that need working multicast, which a runner
-      # cannot be relied on to provide. The loopback end to end tests still run.
-      - name: test
-        run: go test -short -race ./...
+          go-version: ${{ env.GO_VERSION }}
+          cache: false # woosh has no dependencies, so there is nothing to cache
 
       - name: build
-        run: go build ./...
+        run: make build
+
+      # -short leaves out the tests that need working multicast. A runner
+      # cannot be relied on to have it, and the loopback end to end tests
+      # cover the transfer path anyway.
+      - name: test
+        run: make test-short
+
+      - name: the binary answers
+        run: ./woosh version
+
+  quality:
+    name: quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: gofmt
+        run: make fmt-check
+
+      - name: go vet
+        run: make vet
+
+      - name: staticcheck
+        run: make staticcheck
+
+      - name: govulncheck
+        run: make vulncheck
+
+      # woosh is standard library only. This guard fails the build the day
+      # something creeps into go.mod.
+      - name: no dependencies
+        run: make no-deps
+
+      - name: cross compile
+        run: make cross
+
+      - name: coverage
+        run: make cover
+
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: coverage
+          path: coverage.out
+          if-no-files-found: warn

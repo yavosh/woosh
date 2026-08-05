@@ -10,10 +10,11 @@ import (
 	"time"
 )
 
-// authPair runs accept and connect against each other over loopback TCP and
+// authPair runs accept and connect against each other over loopback TCP. It
 // returns the error each side saw. When both sides succeed it also passes a
-// short message from server to client, to prove no buffered byte was lost.
-func authPair(t *testing.T, serverKey, clientKey []byte, serverID, clientID string) (serverErr, clientErr error, got string) {
+// short message from server to client, to prove no buffered byte was lost, and
+// returns what arrived.
+func authPair(t *testing.T, serverKey, clientKey []byte, serverID, clientID string) (got string, serverErr, clientErr error) {
 	t.Helper()
 
 	sa, err := newPeerAuth(serverKey, serverID)
@@ -69,12 +70,12 @@ func authPair(t *testing.T, serverKey, clientKey []byte, serverID, clientID stri
 	}
 
 	<-done
-	return serverErr, clientErr, got
+	return got, serverErr, clientErr
 }
 
 func TestAuthSucceedsWithSameKey(t *testing.T) {
 	key := testKey(t)
-	serverErr, clientErr, got := authPair(t, key, key, "abc123", "abc123")
+	got, serverErr, clientErr := authPair(t, key, key, "abc123", "abc123")
 	if serverErr != nil {
 		t.Fatalf("server: %v", serverErr)
 	}
@@ -87,7 +88,7 @@ func TestAuthSucceedsWithSameKey(t *testing.T) {
 }
 
 func TestAuthFailsWithDifferentKey(t *testing.T) {
-	serverErr, clientErr, _ := authPair(t, testKey(t), testKey(t), "abc123", "abc123")
+	_, serverErr, clientErr := authPair(t, testKey(t), testKey(t), "abc123", "abc123")
 	if !errors.Is(serverErr, errBadKey) {
 		t.Errorf("server error is %v, want errBadKey", serverErr)
 	}
@@ -98,7 +99,7 @@ func TestAuthFailsWithDifferentKey(t *testing.T) {
 
 func TestAuthFailsWithDifferentOfferID(t *testing.T) {
 	key := testKey(t)
-	serverErr, clientErr, _ := authPair(t, key, key, "abc123", "def456")
+	_, serverErr, clientErr := authPair(t, key, key, "abc123", "def456")
 	if !errors.Is(serverErr, errBadKey) {
 		t.Errorf("server error is %v, want errBadKey", serverErr)
 	}

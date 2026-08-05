@@ -145,6 +145,26 @@ Run `recv --wait 30s` when you want to start the receiver before the sender.
 Simple idiomatic Go, more code less libraries. One flat `package main`, standard library only.
 
 ```
-go test ./...        # unit and loopback end-to-end tests
-go test -short ./...  # skips the tests that need working multicast
+make            # build
+make test       # every test, including the ones that need multicast
+make test-short # skip the multicast tests
+make quality    # the guards below
+make check      # quality + full tests + build
+make help       # list the targets
 ```
+
+CI runs the same Makefile targets on ubuntu and macos, so a green build locally means a green
+build there.
+
+| Guard | What it protects |
+|---|---|
+| `fmt-check` | formatting stays gofmt clean |
+| `vet` | the standard suspicious-construct checks |
+| `staticcheck` | a deeper linter, pinned to one version |
+| `vulncheck` | known holes in the standard library and toolchain |
+| `no-deps` | fails the day anything enters `go.mod`, because woosh has no dependencies |
+| `cross` | linux, macOS and windows on amd64 and arm64 still compile |
+| `cover` | statement coverage stays above 60% |
+
+The linters run through `go run tool@version`, so they never enter `go.mod` themselves. Both
+are pinned: an unpinned tool turns a green build red on somebody else's release day.

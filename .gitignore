@@ -1,3 +1,4 @@
 /woosh
+coverage.out
 *.partial
 .woosh-partial-*
