@@ -1,0 +1,38 @@
+package main
+
+// words holds 256 short, easy to type words. A byte indexes it directly, so
+// the length must stay exactly 256. See TestWordsList.
+var words = [256]string{
+	"amber", "anchor", "apple", "arbor", "arrow", "aspen", "atlas", "autumn",
+	"azure", "bacon", "badge", "bagel", "bamboo", "banjo", "barley", "basil",
+	"basin", "beacon", "beetle", "birch", "bishop", "bison", "blaze", "bloom",
+	"blossom", "bluff", "bolt", "bonsai", "boulder", "brass", "bravo", "breeze",
+	"bridge", "bronze", "brook", "buffalo", "bugle", "bundle", "burrow", "cabin",
+	"cactus", "camel", "canal", "candle", "canoe", "canyon", "cargo", "carrot",
+	"castle", "cedar", "cello", "chalk", "cherry", "chisel", "cider", "cinder",
+	"circus", "citrus", "clay", "cliff", "clover", "cobalt", "cocoa", "comet",
+	"compass", "copper", "coral", "cotton", "cougar", "crane", "crater", "crest",
+	"cricket", "crimson", "crystal", "cypress", "daisy", "dawn", "delta", "denim",
+	"desert", "diamond", "domino", "donkey", "dragon", "drift", "dune", "dusk",
+	"eagle", "ember", "emerald", "engine", "fable", "falcon", "fennel", "fern",
+	"fiddle", "finch", "flame", "flint", "florin", "forest", "fossil", "fox",
+	"gadget", "galaxy", "garden", "garnet", "gazelle", "geyser", "ginger", "glacier",
+	"glider", "granite", "gravel", "grotto", "guitar", "gully", "gypsum", "hammer",
+	"harbor", "harvest", "hazel", "heather", "hedge", "helium", "heron", "hickory",
+	"hollow", "honey", "hornet", "hurdle", "indigo", "iris", "island", "ivory",
+	"jackal", "jade", "jasmine", "jetty", "jigsaw", "jungle", "juniper", "kayak",
+	"kernel", "kestrel", "kettle", "keystone", "lagoon", "lantern", "lark", "laurel",
+	"lava", "ledger", "lemon", "lichen", "lilac", "linen", "lizard", "llama",
+	"lobster", "locket", "lotus", "lumber", "lunar", "lynx", "magnet", "mango",
+	"maple", "marble", "marsh", "meadow", "melon", "mesa", "meteor", "mica",
+	"mint", "mirage", "mongoose", "moss", "mountain", "mulberry", "nectar", "needle",
+	"nickel", "nomad", "nutmeg", "oasis", "obsidian", "ocean", "olive", "onyx",
+	"opal", "orbit", "orchid", "osprey", "otter", "oyster", "paddle", "pampas",
+	"panda", "pantry", "papaya", "parcel", "parsley", "pasture", "pebble", "pelican",
+	"pepper", "petal", "pewter", "pigeon", "pilot", "pine", "pillar", "pistachio",
+	"plateau", "plum", "pollen", "poplar", "poppy", "prairie", "puffin", "pumice",
+	"quail", "quarry", "quartz", "quiver", "radish", "rafter", "ranger", "rapids",
+	"raven", "reef", "ribbon", "ridge", "ripple", "river", "robin", "rocket",
+	"rosemary", "rubble", "ruby", "saffron", "sage", "salmon", "sandal", "sapphire",
+	"satchel", "savanna", "scarlet", "sequoia", "shadow", "shale", "shore", "sierra",
+}
