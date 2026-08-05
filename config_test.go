@@ -37,7 +37,6 @@ func TestDecodeKeyIsForgiving(t *testing.T) {
 		"canonical": enc,
 		"lowercase": strings.ToLower(enc),
 		"no dashes": strings.ReplaceAll(enc, "-", ""),
-		"spaced":    strings.ReplaceAll(enc, "-", " "),
 		"padded":    "  " + enc + "\n",
 	}
 	for name, v := range variants {
@@ -57,6 +56,16 @@ func TestDecodeKeyRejectsBadInput(t *testing.T) {
 		if _, err := decodeKey(s); err == nil {
 			t.Errorf("decodeKey(%q) accepted a bad key", s)
 		}
+	}
+
+	// Spaces belong to the word list form. decodeKey must not take them, or
+	// parseKeyInput could not tell the two forms apart.
+	k, err := newKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decodeKey(strings.ReplaceAll(encodeKey(k), "-", " ")); err == nil {
+		t.Error("decodeKey accepted a spaced key, which the word list form needs")
 	}
 }
 

@@ -28,27 +28,73 @@ Go 1.26 or later. Woosh has no dependencies outside the standard library.
 
 ## Set up
 
-Every machine in your woosh network shares one key. Make it once:
+Every machine in your woosh network shares one key. Pick whichever of these three suits you.
+They are three ways to reach the same 32-byte key, not three kinds of key.
+
+**A passphrase, with nothing to copy.** Run the same command on every machine and type the
+same phrase:
+
+```
+$ woosh init --passphrase
+type the same passphrase on every machine in your woosh network.
+it needs 12 characters or more.
+
+passphrase:
+passphrase again:
+deriving the key, this takes a moment...
+network key saved to /Users/you/.config/woosh/key
+```
+
+The phrase never leaves the machine and is never stored. What is typed does not appear on
+screen. Woosh asks twice, because a typo here gives you a key nobody else can reach.
+
+**Eight words, to read out or type over.** Easier to get right than 52 base32 characters:
+
+```
+$ woosh init --words
+network key saved to /Users/you/.config/woosh/key
+
+  oak depend diary forum
+  ill become become lawsuit
+
+type these on your other machines:
+  woosh init --key "oak depend diary forum ill become become lawsuit"
+```
+
+**The base32 key**, which is what a password manager or a config-management tool wants:
 
 ```
 $ woosh init
-network key saved to /Users/you/.config/woosh/key
-
-  WSH-4KQ2-9XJ7-...
-
-run "woosh init --key <that key>" on your other machines.
+  WSH-PDAL-FKTV-CSZN-...
+$ woosh init --key WSH-PDAL-FKTV-CSZN-...   # on the others
 ```
 
-Then, on each other machine:
-
-```
-$ woosh init --key WSH-4KQ2-9XJ7-...
-```
+`--key` takes either form, so you can paste words or base32 and it works out which it is.
 
 The key is the only thing that guards a transfer. Keep it secret.
 
 `WOOSH_KEY` overrides the key file when it is set, which is useful for a throwaway network
-or for a script.
+or for a script. `woosh init --passphrase` also reads a piped phrase, so setup can be scripted:
+
+```
+$ echo "$PHRASE" | woosh init --passphrase
+```
+
+### Which one to pick
+
+|  | Nothing to copy | Strength | Good for |
+|---|---|---|---|
+| `--passphrase` | yes | as strong as the phrase | machines you set up by hand |
+| `--words` | no, 8 words | 88 bits | reading down a phone, typing on a laptop |
+| base32 | no, 52 characters | 256 bits | password managers, scripts, config management |
+
+A passphrase is stretched with PBKDF2-HMAC-SHA256 at 4,000,000 rounds. The salt has to be a
+constant, or two machines could never agree from the phrase alone, so that round count is the
+only thing standing between a weak phrase and a precomputed table. Pick a real passphrase, not
+a password. The 12-character floor is a guard against slips, not a measure of strength.
+
+The words come from the BIP-39 English list, whose entries are unique in their first four
+letters, so a misspelling is caught rather than silently accepted as a different key.
 
 ## Use
 
@@ -100,6 +146,10 @@ need the code for that.
 
 | Flag | Command | What it does |
 |---|---|---|
+| `--passphrase` | init | derive the key from a phrase typed on every machine |
+| `--words` | init | make a key and show it as 8 words |
+| `--key` | init | adopt a key, as words or as base32 |
+| `--force` | init | replace a key that is already there |
 | `--code` | send | use a code you choose |
 | `--name` | send | the file name to give a snippet from stdin |
 | `--timeout` | send | give up if nobody comes, 5m by default |
@@ -143,6 +193,10 @@ Run `recv --wait 30s` when you want to start the receiver before the sender.
 ## Code
 
 Simple idiomatic Go, more code less libraries. One flat `package main`, standard library only.
+Key derivation uses `crypto/pbkdf2` and `crypto/hkdf`, both of which the standard library has
+carried since Go 1.24.
+
+`bip39.txt` is the BIP-39 English word list, embedded with `go:embed`. It is data, not code.
 
 ```
 make            # build

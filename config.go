@@ -55,14 +55,20 @@ func encodeKey(k []byte) string {
 	return b.String()
 }
 
-// decodeKey reads a key written by encodeKey. It ignores case, dashes and spaces.
+// parseKeyInput accepts either form a user can be handed: the word list, or
+// the base32 key. Two or more words can only be a word list, because a base32
+// key holds no spaces.
+func parseKeyInput(s string) ([]byte, error) {
+	if fields := strings.Fields(s); len(fields) > 1 {
+		return keyFromWords(fields)
+	}
+	return decodeKey(s)
+}
+
+// decodeKey reads a key written by encodeKey. It ignores case and dashes. It
+// does not ignore spaces, so that parseKeyInput can tell the two forms apart.
 func decodeKey(s string) ([]byte, error) {
-	s = strings.Map(func(r rune) rune {
-		if r == '-' || r == ' ' || r == '\t' || r == '\n' || r == '\r' {
-			return -1
-		}
-		return r
-	}, s)
+	s = strings.ReplaceAll(strings.TrimSpace(s), "-", "")
 	s = strings.ToUpper(s)
 	s = strings.TrimPrefix(s, strings.TrimSuffix(keyPrefix, "-"))
 
