@@ -36,7 +36,7 @@ get right than 52 base32 characters:
 
 ```
 $ woosh init
-network key saved to /Users/you/.config/woosh/key
+network key saved to <config dir>/woosh/key
 
   oak depend diary forum
   ill become become lawsuit
@@ -56,7 +56,7 @@ it needs 12 characters or more.
 passphrase:
 passphrase again:
 deriving the key, this takes a moment...
-network key saved to /Users/you/.config/woosh/key
+network key saved to <config dir>/woosh/key
 ```
 
 The phrase never leaves the machine and is never stored. What is typed does not appear on
@@ -73,6 +73,9 @@ $ woosh init --key WSH-PDAL-FKTV-CSZN-...   # on the others
 `--key` takes either form, so you can paste words or base32 and it works out which it is.
 
 The key is the only thing that guards a transfer. Keep it secret.
+
+The key file goes under the directory your operating system keeps program configuration in.
+Woosh does not pick a path of its own, and `woosh init` prints the one it used.
 
 `WOOSH_KEY` overrides the key file when it is set, which is useful for a throwaway network
 or for a script. `woosh init --passphrase` also reads a piped phrase, so setup can be scripted:

@@ -225,6 +225,58 @@ func TestRecvHonoursMaxSize(t *testing.T) {
 	}
 }
 
+// TestSendSurvivesABadPeer is the reason a failed attempt does not end an
+// offer: the port is on the open network, so anyone can reach it, and a
+// stranger with the wrong key must not be able to end somebody else's send.
+func TestSendSurvivesABadPeer(t *testing.T) {
+	good, bad := testKey(t), testKey(t)
+	src := t.TempDir()
+	writeFile(t, filepath.Join(src, "a.txt"), "alpha", 0o644)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	ready := make(chan string, 1)
+	sendErr := make(chan error, 1)
+	go func() {
+		sendErr <- runSend(ctx, sendOpts{
+			key: good, code: "1-alpha-alpha", paths: []string{filepath.Join(src, "a.txt")},
+			out: io.Discard, silent: true, timeout: 15 * time.Second,
+			onReady: func(a net.Addr) { ready <- net.JoinHostPort("127.0.0.1", portOf(t, a)) },
+		})
+	}()
+
+	var addr string
+	select {
+	case addr = <-ready:
+	case err := <-sendErr:
+		t.Fatalf("sender stopped before it was ready: %v", err)
+	}
+
+	stranger := runRecv(ctx, recvOpts{key: bad, addr: addr, code: "1-alpha-alpha",
+		stdout: io.Discard, toStdout: true, msg: io.Discard, silent: true})
+	if stranger == nil {
+		t.Fatal("a receiver with the wrong key was served")
+	}
+
+	dest := t.TempDir()
+	if err := runRecv(ctx, recvOpts{key: good, addr: addr, code: "1-alpha-alpha",
+		out: dest, msg: io.Discard, silent: true}); err != nil {
+		t.Fatalf("the offer did not survive the stranger: %v", err)
+	}
+	if err := <-sendErr; err != nil {
+		t.Errorf("sender: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(dest, "a.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "alpha" {
+		t.Errorf("got %q, want %q", got, "alpha")
+	}
+}
+
 func TestSendKeepRejectsStdin(t *testing.T) {
 	err := runSend(context.Background(), sendOpts{
 		key: testKey(t), keep: true, stdin: strings.NewReader("x"), out: io.Discard,

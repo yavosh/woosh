@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -23,6 +24,25 @@ func TestAnnouncementValid(t *testing.T) {
 	for name, a := range bad {
 		if a.valid() {
 			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+// TestCleanTextHoldsBackEscapes covers what ls and recv print. An announce
+// needs no key, so the name it carries is whatever a stranger typed.
+func TestCleanTextHoldsBackEscapes(t *testing.T) {
+	cases := map[string]string{
+		"studio":                 "studio",
+		"my laptop":              "my laptop",
+		"\x1b[31mEVIL\x1b[0m":    "?[31mEVIL?[0m",
+		"one\ntwo":               "one?two",
+		"back\rup":               "back?up",
+		"\u202egnp.exe":          "?gnp.exe", // right-to-left override
+		strings.Repeat("a", 100): strings.Repeat("a", 40) + "...",
+	}
+	for in, want := range cases {
+		if got := cleanText(in); got != want {
+			t.Errorf("cleanText(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
@@ -63,6 +83,58 @@ func TestAnnounceAndBrowse(t *testing.T) {
 	if o.IP == nil {
 		t.Error("the offer has no source address")
 	}
+}
+
+// TestDialOfferTriesAnotherAddress covers a machine with several interfaces.
+// The first announce to arrive can come from an address this machine cannot
+// reach, and the offer is still there behind another one.
+func TestDialOfferTriesAnotherAddress(t *testing.T) {
+	if testing.Short() {
+		t.Skip("multicast is not dependable in a sandbox, run without -short")
+	}
+
+	// The offer, reachable on every interface of this machine.
+	ln, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	id := offerID("1-alpha-retry")
+	a := announcement{V: announceVersion, ID: id, Port: ln.Addr().(*net.TCPAddr).Port, From: "test-host"}
+	if err := announce(ctx, a); err != nil {
+		t.Skipf("this machine cannot send multicast: %v", err)
+	}
+
+	conn, err := dialOffer(ctx, deadAddr(t), id, 5*time.Second)
+	if err != nil {
+		t.Skipf("no announce came back, multicast is probably blocked here: %v", err)
+	}
+	conn.Close()
+}
+
+// deadAddr gives an address that nothing answers on.
+func deadAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+	return addr
 }
 
 // TestCollectOffersIgnoresJunk checks that a malformed datagram on the group

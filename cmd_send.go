@@ -139,11 +139,16 @@ func runSend(ctx context.Context, opts sendOpts) error {
 	fmt.Fprintf(opts.out, "code: %s\n", code)
 	fmt.Fprintf(opts.out, "sending %s, waiting %s for a receiver...\n", src.hdr.describe(), opts.timeout)
 
+	served := 0
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				if errors.Is(ctxErr, context.DeadlineExceeded) {
+					if served > 0 {
+						fmt.Fprintf(opts.out, "served %d receivers\n", served)
+						return nil
+					}
 					return errors.New("nobody took the offer")
 				}
 				return ctxErr
@@ -151,22 +156,32 @@ func runSend(ctx context.Context, opts sendOpts) error {
 			return err
 		}
 
-		if err := serveOne(conn, auth, src, opts); err != nil {
+		started, err := serveOne(conn, auth, src, opts)
+		switch {
+		case err == nil:
+			served++
 			if !opts.keep {
-				return err
+				return nil
 			}
-			// With --keep a failed attempt is not fatal, so report it and wait
-			// for the next receiver.
+		case started && !opts.keep:
+			// Part of the payload has gone, and a snippet read from stdin
+			// cannot be read a second time, so the offer cannot be served
+			// again.
+			return err
+		default:
+			// Nothing of the payload has gone. Anything on the network can
+			// reach this port, so a stranger with the wrong key must not be
+			// able to end the offer. Report the attempt and wait for the next
+			// receiver.
 			fmt.Fprintf(opts.out, "woosh: %v\n", err)
-			continue
-		}
-		if !opts.keep {
-			return nil
 		}
 	}
 }
 
-func serveOne(raw net.Conn, auth peerAuth, src *source, opts sendOpts) error {
+// serveOne serves one receiver. started reports whether the payload began, so
+// the caller can tell an attempt that left the offer untouched from one that
+// consumed part of it.
+func serveOne(raw net.Conn, auth peerAuth, src *source, opts sendOpts) (started bool, err error) {
 	defer raw.Close()
 
 	// A short deadline covers the handshake, so a stalled peer cannot hold the
@@ -175,26 +190,26 @@ func serveOne(raw net.Conn, auth peerAuth, src *source, opts sendOpts) error {
 
 	conn, err := auth.accept(tls.Server(raw, auth.serverConfig()))
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	if err := writeJSONLine(conn, src.hdr); err != nil {
-		return err
+		return false, err
 	}
 	var rep reply
 	if err := readJSONLine(conn.r, &rep); err != nil {
-		return err
+		return false, err
 	}
 	if !rep.Accept {
-		return fmt.Errorf("the receiver declined: %s", rep.Reason)
+		return false, fmt.Errorf("the receiver declined: %s", cleanText(rep.Reason))
 	}
 	if err := raw.SetDeadline(time.Time{}); err != nil {
-		return err
+		return false, err
 	}
 
 	body, err := src.open()
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer body.Close()
 
@@ -202,11 +217,11 @@ func serveOne(raw net.Conn, auth peerAuth, src *source, opts sendOpts) error {
 	n, err := sendPayload(conn, io.TeeReader(body, p))
 	p.done()
 	if err != nil {
-		return err
+		return true, err
 	}
 
 	fmt.Fprintf(opts.out, "sent %s\n", humanBytes(n))
-	return nil
+	return true, nil
 }
 
 // source is what a sender offers: a header, and a way to open the bytes. open
@@ -288,12 +303,15 @@ func tarStream(paths []string, skipped io.Writer) io.ReadCloser {
 	return pr
 }
 
+// describe is for a person to read, so the name goes through cleanText: it may
+// have come off the wire, and safeName lets an escape sequence through.
 func (h header) describe() string {
+	name := cleanText(h.Name)
 	if h.Kind == kindTar {
-		return fmt.Sprintf("%s (archive)", h.Name)
+		return fmt.Sprintf("%s (archive)", name)
 	}
 	if h.Size < 0 {
-		return fmt.Sprintf("%s (from stdin)", h.Name)
+		return fmt.Sprintf("%s (from stdin)", name)
 	}
-	return fmt.Sprintf("%s (%s)", h.Name, humanBytes(h.Size))
+	return fmt.Sprintf("%s (%s)", name, humanBytes(h.Size))
 }

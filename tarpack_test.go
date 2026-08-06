@@ -79,6 +79,38 @@ func TestPackSkipsIrregularFiles(t *testing.T) {
 	}
 }
 
+// TestPackFollowsASymlinkedRoot covers the path a user names on the command
+// line. WalkDir lstats the root, so a linked directory used to arrive empty.
+func TestPackFollowsASymlinkedRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need extra rights on windows")
+	}
+	src := t.TempDir()
+	writeFile(t, filepath.Join(src, "real", "a.txt"), "alpha", 0o644)
+	link := filepath.Join(src, "link")
+	if err := os.Symlink(filepath.Join(src, "real"), link); err != nil {
+		t.Fatal(err)
+	}
+
+	var arc bytes.Buffer
+	if err := packPaths(&arc, []string{link}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	dest := t.TempDir()
+	if err := extractTar(&arc, dest); err != nil {
+		t.Fatal(err)
+	}
+	// The receiver sees the name that was typed, not the name behind the link.
+	got, err := os.ReadFile(filepath.Join(dest, "link", "a.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "alpha" {
+		t.Errorf("got %q, want %q", got, "alpha")
+	}
+}
+
 func TestPackRejectsClashingNames(t *testing.T) {
 	src := t.TempDir()
 	writeFile(t, filepath.Join(src, "one", "x.txt"), "1", 0o644)
