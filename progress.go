@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"time"
+	"unicode"
 )
 
 // progress counts bytes on their way through, and draws a one-line report on
@@ -48,6 +49,25 @@ func (p *progress) draw(prefix string) {
 		return
 	}
 	fmt.Fprintf(p.out, "%s  %s   ", prefix, humanBytes(p.n))
+}
+
+// cleanText makes a string that came off the network safe to show. An announce
+// is not authenticated, so anyone on the network can put escape sequences in
+// the name it carries, and a terminal acts on those. It also caps the length,
+// because a long name would break up the ls table.
+func cleanText(s string) string {
+	const maxRunes = 40
+	out := make([]rune, 0, maxRunes)
+	for _, r := range s {
+		if !unicode.IsPrint(r) {
+			r = '?'
+		}
+		out = append(out, r)
+		if len(out) == maxRunes {
+			return string(out) + "..."
+		}
+	}
+	return string(out)
 }
 
 func humanBytes(n int64) string {

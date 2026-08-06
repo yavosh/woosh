@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -91,14 +92,16 @@ func runRecv(ctx context.Context, opts recvOpts) error {
 		opts.wait = browseFor
 	}
 
-	addr := opts.addr
+	// retryID is the offer to look for again when the address does not answer.
+	// It stays empty when the address was given rather than discovered.
+	addr, retryID := opts.addr, ""
 	if addr == "" {
 		o, err := findOffer(ctx, id, opts.wait)
 		if err != nil {
 			return err
 		}
-		addr, id = o.addr(), o.ID
-		fmt.Fprintf(opts.msg, "found an offer from %s at %s\n", o.From, o.IP)
+		addr, id, retryID = o.addr(), o.ID, o.ID
+		fmt.Fprintf(opts.msg, "found an offer from %s at %s\n", cleanText(o.From), o.IP)
 	}
 
 	auth, err := newPeerAuth(opts.key, id)
@@ -106,8 +109,7 @@ func runRecv(ctx context.Context, opts recvOpts) error {
 		return err
 	}
 
-	dialer := net.Dialer{Timeout: setupTimeout}
-	raw, err := dialer.DialContext(ctx, "tcp", addr)
+	raw, err := dialOffer(ctx, addr, retryID, opts.wait)
 	if err != nil {
 		return err
 	}
@@ -202,6 +204,56 @@ func findOffer(ctx context.Context, id string, wait time.Duration) (offer, error
 		}
 		return offer{}, fmt.Errorf("%d offers are waiting, give the code of the one you want:%s", len(offers), b)
 	}
+}
+
+// dialOffer opens a connection to an offer. A machine with several interfaces
+// announces from each of them, and only some of those addresses can be reached
+// from here, so an address that does not answer sends dialOffer back to the
+// network for another announce of the same offer, until wait runs out.
+//
+// Only a dial failure is worth another address. A handshake that fails means
+// the wrong key, and the same key is on the other end of every address.
+func dialOffer(ctx context.Context, addr, retryID string, wait time.Duration) (net.Conn, error) {
+	dialer := net.Dialer{Timeout: setupTimeout}
+	raw, err := dialer.DialContext(ctx, "tcp", addr)
+	if err == nil || retryID == "" {
+		return raw, err
+	}
+
+	tried := &addrSet{seen: map[string]bool{addr: true}}
+	ctx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	for {
+		o, findErr := waitForOffer(ctx, func(o offer) bool {
+			return o.ID == retryID && tried.unseen(o.addr())
+		})
+		if findErr != nil {
+			// No other address turned up, so report the first failure: it names
+			// the address the user was told about.
+			return nil, err
+		}
+		if raw, dialErr := dialer.DialContext(ctx, "tcp", o.addr()); dialErr == nil {
+			return raw, nil
+		}
+	}
+}
+
+// addrSet is the set of addresses a receiver has already tried. browse calls
+// the match function from one goroutine per interface, so it needs a lock.
+type addrSet struct {
+	mu   sync.Mutex
+	seen map[string]bool
+}
+
+// unseen reports whether addr is new, and remembers it.
+func (s *addrSet) unseen(addr string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.seen[addr] {
+		return false
+	}
+	s.seen[addr] = true
+	return true
 }
 
 // sink is where a payload lands. Nothing reaches its final place until commit,

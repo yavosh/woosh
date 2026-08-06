@@ -194,15 +194,34 @@ func waitForOffer(ctx context.Context, match func(offer) bool) (offer, error) {
 
 	hit := make(chan offer, 1)
 	var once sync.Once
-	go browse(ctx, func(o offer) {
-		if match(o) {
-			once.Do(func() { hit <- o; cancel() })
-		}
-	})
+	stopped := make(chan error, 1)
+	go func() {
+		stopped <- browse(ctx, func(o offer) {
+			if match(o) {
+				once.Do(func() { hit <- o; cancel() })
+			}
+		})
+	}()
 
 	select {
 	case o := <-hit:
 		return o, nil
+	case err := <-stopped:
+		// browse gave up. The match ran before it returned, so an offer that
+		// arrived is already in hit.
+		select {
+		case o := <-hit:
+			return o, nil
+		default:
+		}
+		// A machine that cannot listen for announces says so, instead of
+		// waiting out the timeout and blaming the code. browse gives a nil
+		// error only if every socket died on its own, which is still a reason
+		// to stop rather than to hand back an empty offer.
+		if err == nil {
+			err = errors.New("stopped listening for announces")
+		}
+		return offer{}, err
 	case <-ctx.Done():
 		return offer{}, ctx.Err()
 	}

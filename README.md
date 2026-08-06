@@ -36,7 +36,7 @@ get right than 52 base32 characters:
 
 ```
 $ woosh init
-network key saved to /Users/you/.config/woosh/key
+network key saved to /Users/you/Library/Application Support/woosh/key
 
   oak depend diary forum
   ill become become lawsuit
@@ -56,7 +56,7 @@ it needs 12 characters or more.
 passphrase:
 passphrase again:
 deriving the key, this takes a moment...
-network key saved to /Users/you/.config/woosh/key
+network key saved to /Users/you/Library/Application Support/woosh/key
 ```
 
 The phrase never leaves the machine and is never stored. What is typed does not appear on

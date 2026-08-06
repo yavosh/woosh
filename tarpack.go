@@ -33,11 +33,20 @@ func packPaths(w io.Writer, paths []string, skipped io.Writer) error {
 		}
 		roots[base] = root
 
-		err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		// WalkDir lstats the root, so a root that is a symlink would be
+		// reported as skipped and the receiver would get an empty tree. Walk
+		// what the link points at instead. The receiver still sees the name
+		// that was typed, and a symlink inside the tree is still skipped.
+		walk, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			return err
+		}
+
+		err = filepath.WalkDir(walk, func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
-			rel, err := filepath.Rel(root, p)
+			rel, err := filepath.Rel(walk, p)
 			if err != nil {
 				return err
 			}
