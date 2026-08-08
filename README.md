@@ -43,6 +43,8 @@ network key saved to <config dir>/woosh/key
 
 type these on your other machines:
   woosh init --key "oak depend diary forum ill become become lawsuit"
+
+keep them secret: they are the only thing that guards a transfer.
 ```
 
 **A passphrase, with nothing to copy.** Run the same command on every machine and type the

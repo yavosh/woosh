@@ -32,6 +32,21 @@ func keyPath() (string, error) {
 	return filepath.Join(dir, "woosh", "key"), nil
 }
 
+// shortPath names a path the way a person does, with the home directory as ~.
+// The configuration directory that the operating system chose holds the user
+// name, and that is nobody's business but the user's.
+func shortPath(path string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	rest, ok := strings.CutPrefix(path, home+string(filepath.Separator))
+	if !ok {
+		return path
+	}
+	return "~" + string(filepath.Separator) + rest
+}
+
 // newKey makes a random network key.
 func newKey() ([]byte, error) {
 	k := make([]byte, keyLen)
