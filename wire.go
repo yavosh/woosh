@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	wireVersion = 1
+	wireVersion = 2
 
 	// kindBlob is one file, or a snippet from stdin.
 	kindBlob = "blob"
@@ -45,6 +45,12 @@ type header struct {
 type reply struct {
 	Accept bool   `json:"accept"`
 	Reason string `json:"reason,omitempty"`
+}
+
+// receipt confirms that the receiver checked and committed the payload.
+type receipt struct {
+	Committed bool   `json:"committed"`
+	Reason    string `json:"reason,omitempty"`
 }
 
 func (h header) validate() error {

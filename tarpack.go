@@ -118,6 +118,11 @@ func extractTar(r io.Reader, dest string) error {
 		if err != nil {
 			return err
 		}
+		for key := range hdr.PAXRecords {
+			if strings.HasPrefix(key, "GNU.sparse.") || key == "SCHILY.realsize" {
+				return fmt.Errorf("refused %q: sparse archives are not supported", hdr.Name)
+			}
+		}
 
 		target, err := entryPath(dest, hdr.Name)
 		if err != nil {

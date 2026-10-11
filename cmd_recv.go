@@ -82,7 +82,7 @@ func cmdRecv(ctx context.Context, args []string) error {
 	})
 }
 
-func runRecv(ctx context.Context, opts recvOpts) error {
+func runRecv(ctx context.Context, opts recvOpts) (err error) {
 	id, err := resolveCode(opts.code)
 	if err != nil {
 		return err
@@ -114,11 +114,24 @@ func runRecv(ctx context.Context, opts recvOpts) error {
 		return err
 	}
 	defer raw.Close()
+	stop := context.AfterFunc(ctx, func() { raw.Close() })
+	defer stop()
+	defer func() {
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
+	}()
 	raw.SetDeadline(time.Now().Add(setupTimeout))
 
 	conn, err := auth.connect(tls.Client(raw, auth.clientConfig()))
 	if err != nil {
 		return err
+	}
+	confirm := func(got receipt) error {
+		if err := raw.SetWriteDeadline(time.Now().Add(setupTimeout)); err != nil {
+			return err
+		}
+		return writeJSONLine(conn, got)
 	}
 
 	var hdr header
@@ -135,6 +148,12 @@ func runRecv(ctx context.Context, opts recvOpts) error {
 		writeJSONLine(conn, reply{Reason: err.Error()})
 		return err
 	}
+	stopSink := context.AfterFunc(ctx, func() {
+		if closer, ok := dst.w.(io.Closer); ok {
+			closer.Close()
+		}
+	})
+	defer stopSink()
 	if err := writeJSONLine(conn, reply{Accept: true}); err != nil {
 		dst.abort()
 		return err
@@ -144,19 +163,28 @@ func runRecv(ctx context.Context, opts recvOpts) error {
 		return err
 	}
 
-	fmt.Fprintf(opts.msg, "receiving %s from %s\n", hdr.describe(), hdr.From)
+	fmt.Fprintf(opts.msg, "receiving %s from %s\n", hdr.describe(), cleanText(hdr.From))
 
 	p := newProgress(opts.msg, hdr.Size, opts.silent)
 	n, err := recvPayload(io.MultiWriter(dst.w, p), conn.r, opts.limit)
 	p.done()
 	if err != nil {
 		dst.abort()
+		confirm(receipt{Reason: err.Error()})
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		dst.abort()
 		return err
 	}
 
 	where, err := dst.commit()
 	if err != nil {
+		confirm(receipt{Reason: err.Error()})
 		return err
+	}
+	if err := confirm(receipt{Committed: true}); err != nil {
+		return fmt.Errorf("payload committed, but could not confirm delivery: %w", err)
 	}
 	fmt.Fprintf(opts.msg, "got %s%s\n", humanBytes(n), where)
 	return nil
@@ -192,6 +220,10 @@ func findOffer(ctx context.Context, id string, wait time.Duration) (offer, error
 	if err != nil {
 		return offer{}, err
 	}
+	return chooseOffer(offers)
+}
+
+func chooseOffer(offers []offer) (offer, error) {
 	switch len(offers) {
 	case 0:
 		return offer{}, errors.New("no offer on this network")
@@ -200,7 +232,7 @@ func findOffer(ctx context.Context, id string, wait time.Duration) (offer, error
 	default:
 		var b []byte
 		for _, o := range offers {
-			b = append(b, fmt.Sprintf("\n  %s from %s", o.ID, o.From)...)
+			b = append(b, fmt.Sprintf("\n  %s from %s", cleanText(o.ID), cleanText(o.From))...)
 		}
 		return offer{}, fmt.Errorf("%d offers are waiting, give the code of the one you want:%s", len(offers), b)
 	}
@@ -278,7 +310,7 @@ func newSink(hdr header, opts recvOpts) (*sink, error) {
 	return newFileSink(hdr, opts)
 }
 
-// newFileSink writes to "<name>.partial" and renames on commit, so a broken
+// newFileSink writes to a unique staging file and publishes on commit, so a broken
 // transfer never leaves a file that looks complete.
 func newFileSink(hdr header, opts recvOpts) (*sink, error) {
 	name, err := safeName(hdr.Name)
@@ -294,35 +326,49 @@ func newFileSink(hdr header, opts recvOpts) (*sink, error) {
 			target = opts.out
 		}
 	}
-	if _, err := os.Stat(target); err == nil && !opts.force {
+	if _, err := os.Lstat(target); err == nil && !opts.force {
 		return nil, fmt.Errorf("%s is already there, use --force to replace it", target)
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
 	}
 
 	perm := os.FileMode(hdr.Mode).Perm()
 	if perm == 0 {
 		perm = 0o644
 	}
-	tmp := target + ".partial"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	staging, err := os.MkdirTemp(filepath.Dir(target), ".woosh-partial-*")
 	if err != nil {
 		return nil, err
+	}
+	tmp := filepath.Join(staging, "payload")
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		os.Remove(staging)
+		return nil, err
+	}
+	abort := func() {
+		f.Close()
+		os.Remove(tmp)
+		os.Remove(staging)
 	}
 
 	return &sink{
 		w: f,
 		commit: func() (string, error) {
+			defer abort()
 			if err := f.Close(); err != nil {
 				return "", err
 			}
-			if err := os.Rename(tmp, target); err != nil {
+			publish := os.Link // atomically refuses an existing target, including symlinks
+			if opts.force {
+				publish = os.Rename
+			}
+			if err := publish(tmp, target); err != nil {
 				return "", err
 			}
-			return " into " + target, nil
+			return fmt.Sprintf(" into %q", target), nil
 		},
-		abort: func() {
-			f.Close()
-			os.Remove(tmp)
-		},
+		abort: abort,
 	}, nil
 }
 
@@ -358,10 +404,15 @@ func newTarSink(opts recvOpts) (*sink, error) {
 				return "", err
 			}
 			if err := moveInto(staging, dest, opts.force); err != nil {
-				os.RemoveAll(staging)
-				return "", err
+				var cleanup *cleanupError
+				if !errors.As(err, &cleanup) {
+					return "", fmt.Errorf("%w; received files remain in %s", err, staging)
+				}
+				if opts.msg != nil {
+					fmt.Fprintf(opts.msg, "woosh: %s\n", cleanMessage(cleanup.Error()))
+				}
 			}
-			return " into " + dest + string(filepath.Separator), nil
+			return fmt.Sprintf(" into %q", dest+string(filepath.Separator)), nil
 		},
 		abort: func() {
 			pw.CloseWithError(errors.New("transfer failed"))
@@ -369,30 +420,6 @@ func newTarSink(opts recvOpts) (*sink, error) {
 			os.RemoveAll(staging)
 		},
 	}, nil
-}
-
-// moveInto moves every top level entry of staging into dest, then removes
-// staging.
-func moveInto(staging, dest string, force bool) error {
-	entries, err := os.ReadDir(staging)
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		target := filepath.Join(dest, e.Name())
-		if _, err := os.Stat(target); err == nil {
-			if !force {
-				return fmt.Errorf("%s is already there, use --force to replace it", target)
-			}
-			if err := os.RemoveAll(target); err != nil {
-				return err
-			}
-		}
-		if err := os.Rename(filepath.Join(staging, e.Name()), target); err != nil {
-			return err
-		}
-	}
-	return os.Remove(staging)
 }
 
 // isTerminal reports whether w is a character device, which means a person is

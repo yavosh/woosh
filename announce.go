@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -46,7 +47,8 @@ func (o offer) addr() string {
 }
 
 func (a announcement) valid() bool {
-	return a.V == announceVersion && len(a.ID) == offerIDLen && a.Port > 0 && a.Port < 65536
+	_, err := hex.DecodeString(a.ID)
+	return err == nil && a.V == announceVersion && len(a.ID) == offerIDLen && a.Port > 0 && a.Port < 65536
 }
 
 // announce sends a until ctx ends. It writes on every interface that can carry
@@ -202,7 +204,10 @@ func waitForOffer(ctx context.Context, match func(offer) bool) (offer, error) {
 			}
 		})
 	}()
+	return awaitOffer(ctx, hit, stopped)
+}
 
+func awaitOffer(ctx context.Context, hit <-chan offer, stopped <-chan error) (offer, error) {
 	select {
 	case o := <-hit:
 		return o, nil
@@ -223,6 +228,11 @@ func waitForOffer(ctx context.Context, match func(offer) bool) (offer, error) {
 		}
 		return offer{}, err
 	case <-ctx.Done():
+		select {
+		case o := <-hit:
+			return o, nil
+		default:
+		}
 		return offer{}, ctx.Err()
 	}
 }

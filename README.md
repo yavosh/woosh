@@ -24,7 +24,7 @@ got 2.4 MB into ./report.pdf
 go install github.com/yavosh/woosh@latest
 ```
 
-Go 1.26 or later. Woosh has no dependencies outside the standard library.
+Go 1.27.2 or later. Woosh has no dependencies outside the standard library.
 
 ## Set up
 
@@ -183,8 +183,24 @@ Run `recv --wait 30s` when you want to start the receiver before the sender.
    proof does not verify and the transfer stops.
 5. The sender describes the payload, the receiver accepts, and the bytes flow as
    length-prefixed chunks with a SHA-256 at the end.
-6. Nothing lands in its final place until that checksum matches. A broken transfer leaves a
-   `.partial` file or a `.woosh-partial-*` directory, never a file that looks complete.
+6. Files stay in unique `.woosh-partial-*` staging paths until the checksum matches.
+   Failed transfers remove their staging paths. Archive publication preflights conflicts
+   and rolls back failures. If publication fails, the error names the retained staging
+   directory for recovery. Several archive entries cannot appear atomically as one update.
+   Stdout streams bytes before checksum verification.
+7. The receiver confirms delivery after verification and publication. The sender reports
+   success only after this receipt. Both peers must support wire version 2; older builds
+   fail with a version mismatch. A lost receipt leaves delivery unconfirmed even if the
+   receiver committed the files.
+
+Archive publication and file publication without overwriting require hard-link support on the destination filesystem.
+Publication errors identify retained recovery paths when rollback cannot complete.
+Cleanup failures after successful archive publication produce a warning and retain recovery paths.
+They do not change the delivery receipt to a failure.
+Cancellation closes active connections and closable streams. The CLI allows one second
+for cleanup, then exits even if an inherited stdin or stdout syscall remains blocked.
+Forced shutdown can leave partially published archive entries and retained staging or backups.
+Inspect these paths for recovery before removing them.
 
 ## What it does not do
 
@@ -192,6 +208,8 @@ Run `recv --wait 30s` when you want to start the receiver before the sender.
 - Touch your clipboard. Pipe `pbpaste` and `pbcopy` yourself.
 - Carry symlinks, sockets, or device files. Woosh sends regular files and directories, and
   reports what it skipped.
+- Accept sparse archive encodings. Receivers reject them to prevent disk expansion beyond
+  the transferred payload. `--max-size` limits transferred bytes.
 - Resume an interrupted transfer.
 - Tell your machines apart. One shared key means every machine that holds it is equally
   trusted.

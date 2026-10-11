@@ -6,7 +6,8 @@ GOFILES := $(shell find . -name '*.go' -not -path './.git/*')
 # Quality tools run through "go run tool@version", so they never enter go.mod
 # and woosh stays free of dependencies. Pin them: an unpinned tool turns a
 # green build red on somebody else's release day.
-STATICCHECK  := honnef.co/go/tools/cmd/staticcheck@v0.7.0
+# Go 1.27.2 compatibility fix: https://github.com/dominikh/go-tools/issues/1832
+STATICCHECK  := honnef.co/go/tools/cmd/staticcheck@v0.7.0-0.dev.0.20261009230814-452d5bb86b45
 GOVULNCHECK  := golang.org/x/vuln/cmd/govulncheck@v1.6.0
 
 # Platforms that must keep compiling.
