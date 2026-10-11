@@ -30,6 +30,7 @@ func storedAuth(t *testing.T, d deviceIdentity, store peerTrust) peerAuth {
 		t.Fatal(err)
 	}
 	auth.offerID = "abc123"
+	auth.known = store.check
 	return auth
 }
 
@@ -369,5 +370,36 @@ func TestRemoteDeclineCancelsOpenConfirmation(t *testing.T) {
 	}
 	if errors.Is(serverErr, context.Canceled) {
 		t.Fatal("remote rejection was reported as a local interrupt")
+	}
+}
+
+func TestKnownPeerAllowsFirstUseConfirmationOnOtherDevice(t *testing.T) {
+	sender, receiver := testDevice(t, "sender"), testDevice(t, "receiver")
+	senderStore := peerTrust{dir: t.TempDir(), confirm: func(context.Context, peerIdentity) (bool, error) { return true, nil }}
+	if err := senderStore.verify(t.Context(), peerIdentity{Name: receiver.Name, Key: receiver.publicKey()}); err != nil {
+		t.Fatal(err)
+	}
+	receiverStore := peerTrust{dir: t.TempDir(), confirm: func(ctx context.Context, _ peerIdentity) (bool, error) {
+		timer := time.NewTimer(knownTrustTimeout + 100*time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			return true, nil
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
+	}}
+	sa, ca := storedAuth(t, sender, senderStore), storedAuth(t, receiver, receiverStore)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	sa.ctx, ca.ctx = ctx, ctx
+	var messages bytes.Buffer
+	sa.out = &messages
+	got, serverErr, clientErr := authPair(t, sa, ca)
+	if serverErr != nil || clientErr != nil || got == "" {
+		t.Fatalf("first-use confirmation expired too early: server=%v client=%v", serverErr, clientErr)
+	}
+	if !strings.Contains(messages.String(), "waiting for receiver to confirm trust") {
+		t.Fatal("sender did not report the pending confirmation")
 	}
 }

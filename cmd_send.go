@@ -107,6 +107,7 @@ func runSend(ctx context.Context, opts sendOpts) error {
 	auth := opts.auth
 	auth.offerID = id
 	auth.ctx = ctx
+	auth.out = opts.out
 	src.hdr.From = auth.name
 
 	ln, err := net.Listen("tcp", ":0")
@@ -218,7 +219,7 @@ func serveOne(ctx, waiting context.Context, raw net.Conn, auth peerAuth, src *so
 		return false, err
 	}
 	if !rep.Accept {
-		return false, fmt.Errorf("the receiver declined: %s", cleanText(rep.Reason))
+		return false, fmt.Errorf("the receiver declined: %s", cleanMessage(rep.Reason))
 	}
 	if err := raw.SetDeadline(time.Time{}); err != nil {
 		return false, err
