@@ -226,6 +226,8 @@ func serveOne(ctx, waiting context.Context, raw net.Conn, auth peerAuth, src *so
 		return false, err
 	}
 	defer body.Close()
+	stopBody := context.AfterFunc(ctx, func() { body.Close() })
+	defer stopBody()
 
 	p := newProgress(opts.out, src.hdr.Size, opts.silent)
 	n, err := sendPayload(conn, io.TeeReader(body, p))
@@ -270,6 +272,9 @@ func newSource(opts sendOpts) (*source, error) {
 		}
 		hdr.Kind, hdr.Name, hdr.Size = kindBlob, name, -1
 		return &source{hdr: hdr, open: func() (io.ReadCloser, error) {
+			if body, ok := opts.stdin.(io.ReadCloser); ok {
+				return body, nil
+			}
 			return io.NopCloser(opts.stdin), nil
 		}}, nil
 	}

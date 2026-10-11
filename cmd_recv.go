@@ -148,6 +148,12 @@ func runRecv(ctx context.Context, opts recvOpts) (err error) {
 		writeJSONLine(conn, reply{Reason: err.Error()})
 		return err
 	}
+	stopSink := context.AfterFunc(ctx, func() {
+		if closer, ok := dst.w.(io.Closer); ok {
+			closer.Close()
+		}
+	})
+	defer stopSink()
 	if err := writeJSONLine(conn, reply{Accept: true}); err != nil {
 		dst.abort()
 		return err
@@ -165,6 +171,10 @@ func runRecv(ctx context.Context, opts recvOpts) (err error) {
 	if err != nil {
 		dst.abort()
 		confirm(receipt{Reason: err.Error()})
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		dst.abort()
 		return err
 	}
 
@@ -326,23 +336,26 @@ func newFileSink(hdr header, opts recvOpts) (*sink, error) {
 	if perm == 0 {
 		perm = 0o644
 	}
-	f, err := os.CreateTemp(filepath.Dir(target), ".woosh-partial-*")
+	staging, err := os.MkdirTemp(filepath.Dir(target), ".woosh-partial-*")
 	if err != nil {
 		return nil, err
 	}
-	tmp := f.Name()
+	tmp := filepath.Join(staging, "payload")
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		os.Remove(staging)
+		return nil, err
+	}
 	abort := func() {
 		f.Close()
 		os.Remove(tmp)
+		os.Remove(staging)
 	}
 
 	return &sink{
 		w: f,
 		commit: func() (string, error) {
 			defer abort()
-			if err := f.Chmod(perm); err != nil {
-				return "", err
-			}
 			if err := f.Close(); err != nil {
 				return "", err
 			}
@@ -391,7 +404,13 @@ func newTarSink(opts recvOpts) (*sink, error) {
 				return "", err
 			}
 			if err := moveInto(staging, dest, opts.force); err != nil {
-				return "", fmt.Errorf("%w; received files remain in %s", err, staging)
+				var cleanup *cleanupError
+				if !errors.As(err, &cleanup) {
+					return "", fmt.Errorf("%w; received files remain in %s", err, staging)
+				}
+				if opts.msg != nil {
+					fmt.Fprintf(opts.msg, "woosh: %s\n", cleanMessage(cleanup.Error()))
+				}
 			}
 			return fmt.Sprintf(" into %q", dest+string(filepath.Separator)), nil
 		},

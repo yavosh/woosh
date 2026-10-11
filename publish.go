@@ -65,8 +65,23 @@ func moveInto(staging, dest string, force bool) error {
 	if err := published.finish(); err != nil {
 		return rollback(err)
 	}
-	return os.RemoveAll(staging)
+	if err := os.RemoveAll(staging); err != nil {
+		return &cleanupError{staging, err}
+	}
+	return nil
 }
+
+// cleanupError means publication succeeded, but staging cleanup needs attention.
+type cleanupError struct {
+	staging string
+	err     error
+}
+
+func (e *cleanupError) Error() string {
+	return fmt.Sprintf("files committed; could not remove staging %q: %v", e.staging, e.err)
+}
+
+func (e *cleanupError) Unwrap() error { return e.err }
 
 type publishedPath struct {
 	path string

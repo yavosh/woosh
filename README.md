@@ -193,8 +193,14 @@ Run `recv --wait 30s` when you want to start the receiver before the sender.
    fail with a version mismatch. A lost receipt leaves delivery unconfirmed even if the
    receiver committed the files.
 
-Publication without overwriting requires hard-link support on the destination filesystem.
-Unsupported filesystems fail without replacing existing files.
+Archive publication and file publication without overwriting require hard-link support on the destination filesystem.
+Publication errors identify retained recovery paths when rollback cannot complete.
+Cleanup failures after successful archive publication produce a warning and retain recovery paths.
+They do not change the delivery receipt to a failure.
+Cancellation closes active connections and closable streams. The CLI allows one second
+for cleanup, then exits even if an inherited stdin or stdout syscall remains blocked.
+Forced shutdown can leave partially published archive entries and retained staging or backups.
+Inspect these paths for recovery before removing them.
 
 ## What it does not do
 

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 )
 
 // version is set at build time with -ldflags "-X main.version=..."
@@ -39,9 +40,9 @@ func main() {
 	case "init":
 		err = cmdInit(os.Args[2:])
 	case "send":
-		err = cmdSend(ctx, os.Args[2:])
+		err = runTransfer(ctx, func() error { return cmdSend(ctx, os.Args[2:]) })
 	case "recv":
-		err = cmdRecv(ctx, os.Args[2:])
+		err = runTransfer(ctx, func() error { return cmdRecv(ctx, os.Args[2:]) })
 	case "ls":
 		err = cmdLs(ctx, os.Args[2:])
 	case "version":
@@ -59,5 +60,24 @@ func main() {
 		}
 		fmt.Fprintf(os.Stderr, "woosh: %s\n", cleanMessage(err.Error()))
 		os.Exit(1)
+	}
+}
+
+// runTransfer gives cancellation a second to clean up before main exits.
+// Inherited stdin or stdout can block in a syscall that Close cannot interrupt.
+func runTransfer(ctx context.Context, command func() error) error {
+	done := make(chan error, 1)
+	go func() { done <- command() }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		timer := time.NewTimer(time.Second)
+		defer timer.Stop()
+		select {
+		case <-done:
+		case <-timer.C:
+		}
+		return ctx.Err()
 	}
 }

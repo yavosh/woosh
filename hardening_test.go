@@ -235,6 +235,42 @@ func TestArchiveForceReplacesFilesAndDirectories(t *testing.T) {
 	}
 }
 
+func TestArchiveCleanupFailureStillConfirmsDelivery(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix permissions")
+	}
+	src, dest := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(src, "a"), "new first file", 0o600)
+	writeFile(t, filepath.Join(src, "b"), "new second file", 0o600)
+	writeFile(t, filepath.Join(dest, "a", "locked", "old.txt"), "old tree", 0o600)
+	// The top directory can move; its nested read-only directory prevents cleanup.
+	if err := os.Chmod(filepath.Join(dest, "a", "locked"), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		filepath.WalkDir(dest, func(path string, entry fs.DirEntry, err error) error {
+			if err == nil && entry.IsDir() {
+				return os.Chmod(path, 0o700)
+			}
+			return err
+		})
+	})
+	var messages bytes.Buffer
+	key, code := testKey(t), "1-alpha-beta"
+	err := transfer(t,
+		sendOpts{key: key, code: code, paths: []string{filepath.Join(src, "a"), filepath.Join(src, "b")}},
+		recvOpts{key: key, code: code, out: dest, force: true, msg: &messages},
+	)
+	if err != nil {
+		t.Fatal("post-commit cleanup failure rejected delivery:", err)
+	}
+	requireContent(t, filepath.Join(dest, "a"), "new first file")
+	requireContent(t, filepath.Join(dest, "b"), "new second file")
+	if os.Geteuid() != 0 && !strings.Contains(messages.String(), "files committed; could not remove staging") {
+		t.Fatal("receiver did not report cleanup recovery path")
+	}
+}
+
 func TestArchivePreflightRefusesDanglingSymlink(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlinks need extra rights on windows")
@@ -281,7 +317,7 @@ func TestArchiveRollbackAfterPublicationFailure(t *testing.T) {
 				if err := os.Symlink("old.txt", filepath.Join(dest, "a", "link")); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.Chmod(filepath.Join(dest, "a"), 0o500); err != nil {
+				if err := os.Chmod(filepath.Join(dest, "a"), 0o750); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -291,14 +327,14 @@ func TestArchiveRollbackAfterPublicationFailure(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer ln.Close()
-			if err := moveInto(staging, dest, force); err == nil {
-				t.Fatal("expected publication failure")
+			if err := moveInto(staging, dest, force); err == nil || !strings.Contains(err.Error(), "unsupported file type") {
+				t.Fatalf("expected a failure after publishing the first entry: %v", err)
 			}
 			requireContent(t, filepath.Join(staging, "a"), "incoming file")
 			if force {
 				requireContent(t, filepath.Join(dest, "a", "old.txt"), "original file")
 				requireContent(t, filepath.Join(dest, "a", "link"), "original file")
-				if got := dirPerm(t, filepath.Join(dest, "a")); got != 0o500 {
+				if got := dirPerm(t, filepath.Join(dest, "a")); got != 0o750 {
 					t.Fatalf("rollback changed directory permissions to %o", got)
 				}
 			} else if _, err := os.Stat(filepath.Join(dest, "a")); !errors.Is(err, os.ErrNotExist) {
@@ -507,6 +543,89 @@ func TestSendCancellationClosesActiveConnection(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSendCancellationClosesBlockedInput(t *testing.T) {
+	key, code := testKey(t), "1-alpha-beta"
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	started := make(chan struct{}, 1)
+	input := &startedReader{r, started}
+	addr, done, cancel := startTestSender(t, sendOpts{key: key, code: code, stdin: input})
+	connectTestReceiver(t, key, code, addr)
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("sender did not read stdin")
+	}
+	cancel()
+	if err := waitSender(t, done); !errors.Is(err, context.Canceled) {
+		t.Fatalf("blocked stdin cancellation returned %v", err)
+	}
+}
+
+func TestRecvCancellationClosesBlockedOutput(t *testing.T) {
+	key, code := testKey(t), "1-alpha-beta"
+	addr, sendDone, stopSender := startTestSender(t, sendOpts{
+		key: key, code: code, stdin: bytes.NewReader(make([]byte, 16<<20)),
+	})
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	blocked := make(chan struct{}, 1)
+	output := &startedWriter{w, blocked}
+	recvDone := make(chan error, 1)
+	go func() {
+		recvDone <- runRecv(ctx, recvOpts{
+			key: key, code: code, addr: addr, stdout: output, toStdout: true, msg: io.Discard, silent: true,
+		})
+	}()
+	select {
+	case <-blocked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("receiver never accepted the payload")
+	}
+	cancel()
+	if err := waitSender(t, recvDone); !errors.Is(err, context.Canceled) {
+		t.Fatalf("blocked stdout cancellation returned %v", err)
+	}
+	stopSender()
+	waitSender(t, sendDone)
+}
+
+type startedReader struct {
+	io.ReadCloser
+	started chan<- struct{}
+}
+
+func (r *startedReader) Read(b []byte) (int, error) {
+	select {
+	case r.started <- struct{}{}:
+	default:
+	}
+	return r.ReadCloser.Read(b)
+}
+
+type startedWriter struct {
+	io.WriteCloser
+	started chan<- struct{}
+}
+
+func (w *startedWriter) Write(b []byte) (int, error) {
+	select {
+	case w.started <- struct{}{}:
+	default:
+	}
+	return w.WriteCloser.Write(b)
 }
 
 func TestSenderRequiresDeliveryReceipt(t *testing.T) {
