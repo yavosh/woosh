@@ -7,15 +7,20 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"time"
 )
 
 const (
-	authVersion  = 1
-	trustTimeout = 5 * time.Minute
+	authVersion       = 1
+	trustTimeout      = 5 * time.Minute
+	knownTrustTimeout = 5 * time.Second
 )
 
 var errWrongOffer = errors.New("the peer selected a different offer")
+
+var errApprovalTimeout = errors.New("peer approval timed out; retry the transfer")
 
 // Read through r, not through Conn, so no buffered byte is lost.
 type authConn struct {
@@ -30,6 +35,8 @@ type peerAuth struct {
 	localFingerprint string
 	offerID          string
 	ctx              context.Context
+	out              io.Writer
+	known            func(peerIdentity) (bool, error)
 	verify           func(context.Context, peerIdentity) error
 }
 
@@ -56,6 +63,7 @@ func loadPeerAuth(ctx context.Context) (peerAuth, error) {
 	store := peerTrust{dir: dir, confirm: confirmPeer}
 	auth, err := newPeerAuth(d, store.verify)
 	auth.ctx = ctx
+	auth.known = store.check
 	return auth, err
 }
 
@@ -73,8 +81,9 @@ func (a peerAuth) clientConfig() *tls.Config {
 }
 
 type authHello struct {
-	V  int    `json:"auth"`
-	ID string `json:"offer"`
+	V     int    `json:"auth"`
+	ID    string `json:"offer"`
+	Known bool   `json:"known"`
 }
 
 func (a peerAuth) accept(conn *tls.Conn) (*authConn, error)  { return a.finish(conn, false) }
@@ -97,8 +106,16 @@ func (a peerAuth) finish(conn *tls.Conn, client bool) (*authConn, error) {
 		return nil, errors.New("the peer sent an invalid identity certificate signature")
 	}
 	peer := peerIdentity{Name: cert.Subject.CommonName, Key: key, Addr: conn.RemoteAddr().String()}
+	known := false
+	if a.known != nil {
+		var err error
+		known, err = a.known(peer)
+		if err != nil {
+			return nil, err
+		}
+	}
 	r := bufio.NewReader(conn)
-	hello := authHello{V: authVersion, ID: a.offerID}
+	hello := authHello{V: authVersion, ID: a.offerID, Known: known}
 	var got authHello
 	// The client writes first. Sending the offer ID on this TLS session binds it to these identities.
 	if client {
@@ -120,10 +137,14 @@ func (a peerAuth) finish(conn *tls.Conn, client bool) (*authConn, error) {
 	if got.ID != a.offerID {
 		return nil, errWrongOffer
 	}
-	if err := conn.SetDeadline(time.Now().Add(trustTimeout)); err != nil {
+	wait := trustTimeout
+	if known && got.Known {
+		wait = knownTrustTimeout
+	}
+	if err := conn.SetDeadline(time.Now().Add(wait)); err != nil {
 		return nil, err
 	}
-	ctx, timeout := context.WithTimeout(a.ctx, trustTimeout)
+	ctx, timeout := context.WithTimeoutCause(a.ctx, wait, errApprovalTimeout)
 	defer timeout()
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
@@ -132,7 +153,12 @@ func (a peerAuth) finish(conn *tls.Conn, client bool) (*authConn, error) {
 		var approval reply
 		err := readJSONLine(r, &approval)
 		if err != nil {
-			err = fmt.Errorf("peer trust was not confirmed: %w", err)
+			var timed net.Error
+			if errors.As(err, &timed) && timed.Timeout() {
+				err = errApprovalTimeout
+			} else {
+				err = fmt.Errorf("peer trust was not confirmed: %w", err)
+			}
 		} else if !approval.Accept {
 			err = errors.New("the other device did not trust this device")
 		}
@@ -152,13 +178,25 @@ func (a peerAuth) finish(conn *tls.Conn, client bool) (*authConn, error) {
 	if err := writeJSONLine(conn, reply{Accept: true}); err != nil {
 		return nil, err
 	}
-	select {
-	case err := <-approved:
-		if err != nil {
-			return nil, err
+	status := time.NewTimer(time.Second)
+	defer status.Stop()
+	for {
+		select {
+		case err := <-approved:
+			if err != nil {
+				return nil, err
+			}
+			return &authConn{Conn: conn, r: r, peer: peer}, nil
+		case <-ctx.Done():
+			return nil, context.Cause(ctx)
+		case <-status.C:
+			if a.out != nil {
+				if known && got.Known {
+					fmt.Fprintf(a.out, "waiting for %s to complete authentication...\n", peer.Name)
+				} else {
+					fmt.Fprintf(a.out, "waiting for %s to confirm trust...\n", peer.Name)
+				}
+			}
 		}
-	case <-ctx.Done():
-		return nil, context.Cause(ctx)
 	}
-	return &authConn{Conn: conn, r: r, peer: peer}, nil
 }

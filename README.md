@@ -64,7 +64,10 @@ Subsequent transfers verify the saved public keys without asking again, includin
 
 Confirmation reads from the controlling terminal. It does not consume snippet stdin or write into payload stdout.
 Without a terminal, an unknown device is rejected. Previously trusted devices work in scripts.
-Confirmation times out after five minutes. Typing anything except `yes` declines trust.
+First-use confirmation times out after five minutes. Typing anything except `yes` declines trust.
+When both devices report saved trust, automatic approval times out after five seconds.
+This releases stalled connections so another receiver can retry the offer.
+Waiting for peer approval shows a status message after one second.
 
 The identity file and `known_peers` directory live under your operating system's configuration directory, inside `woosh`.
 On Unix, these files use mode `0600`, and new configuration directories use mode `0700`.

@@ -108,6 +108,7 @@ func runRecv(ctx context.Context, opts recvOpts) (err error) {
 	auth := opts.auth
 	auth.offerID = id
 	auth.ctx = ctx
+	auth.out = opts.msg
 
 	raw, err := dialOffer(ctx, addr, retryID, opts.wait)
 	if err != nil {
