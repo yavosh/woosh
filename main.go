@@ -57,7 +57,7 @@ func main() {
 		if errors.Is(err, context.Canceled) {
 			os.Exit(130)
 		}
-		fmt.Fprintf(os.Stderr, "woosh: %v\n", err)
+		fmt.Fprintf(os.Stderr, "woosh: %s\n", cleanMessage(err.Error()))
 		os.Exit(1)
 	}
 }

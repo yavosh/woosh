@@ -39,7 +39,7 @@ func runLs(ctx context.Context, wait time.Duration, out *os.File) error {
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "ID\tFROM\tADDRESS")
 	for _, o := range offers {
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", o.ID, cleanText(o.From), o.addr())
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", cleanText(o.ID), cleanText(o.From), o.addr())
 	}
 	return tw.Flush()
 }

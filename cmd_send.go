@@ -17,7 +17,7 @@ import (
 const (
 	defaultSnippetName = "snippet.txt"
 
-	// setupTimeout bounds the handshake and the header exchange. The payload
+	// setupTimeout bounds the handshake, header exchange, and delivery receipt. The payload
 	// that follows runs without a deadline.
 	setupTimeout = 30 * time.Second
 )
@@ -115,11 +115,14 @@ func runSend(ctx context.Context, opts sendOpts) error {
 	}
 	defer ln.Close()
 
+	parent := ctx
+	var cancel context.CancelFunc
 	if opts.timeout > 0 {
-		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, opts.timeout)
-		defer cancel()
+	} else {
+		ctx, cancel = context.WithCancel(ctx)
 	}
+	defer cancel()
 	go func() {
 		<-ctx.Done()
 		ln.Close() // unblocks Accept
@@ -156,7 +159,7 @@ func runSend(ctx context.Context, opts sendOpts) error {
 			return err
 		}
 
-		started, err := serveOne(conn, auth, src, opts)
+		started, err := serveOne(parent, ctx, conn, auth, src, opts)
 		switch {
 		case err == nil:
 			served++
@@ -173,7 +176,7 @@ func runSend(ctx context.Context, opts sendOpts) error {
 			// reach this port, so a stranger with the wrong key must not be
 			// able to end the offer. Report the attempt and wait for the next
 			// receiver.
-			fmt.Fprintf(opts.out, "woosh: %v\n", err)
+			fmt.Fprintf(opts.out, "woosh: %s\n", cleanMessage(err.Error()))
 		}
 	}
 }
@@ -181,12 +184,23 @@ func runSend(ctx context.Context, opts sendOpts) error {
 // serveOne serves one receiver. started reports whether the payload began, so
 // the caller can tell an attempt that left the offer untouched from one that
 // consumed part of it.
-func serveOne(raw net.Conn, auth peerAuth, src *source, opts sendOpts) (started bool, err error) {
+func serveOne(ctx, waiting context.Context, raw net.Conn, auth peerAuth, src *source, opts sendOpts) (started bool, err error) {
 	defer raw.Close()
+	stop := context.AfterFunc(ctx, func() { raw.Close() })
+	defer stop()
+	defer func() {
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
+	}()
 
 	// A short deadline covers the handshake, so a stalled peer cannot hold the
 	// offer open. The payload itself may take as long as it needs.
-	raw.SetDeadline(time.Now().Add(setupTimeout))
+	deadline := time.Now().Add(setupTimeout)
+	if end, ok := waiting.Deadline(); ok && end.Before(deadline) {
+		deadline = end
+	}
+	raw.SetDeadline(deadline)
 
 	conn, err := auth.accept(tls.Server(raw, auth.serverConfig()))
 	if err != nil {
@@ -218,6 +232,16 @@ func serveOne(raw net.Conn, auth peerAuth, src *source, opts sendOpts) (started 
 	p.done()
 	if err != nil {
 		return true, err
+	}
+	if err := raw.SetReadDeadline(time.Now().Add(setupTimeout)); err != nil {
+		return true, err
+	}
+	var got receipt
+	if err := readJSONLine(conn.r, &got); err != nil {
+		return true, fmt.Errorf("delivery was not confirmed: %w", err)
+	}
+	if !got.Committed {
+		return true, fmt.Errorf("the receiver could not commit the payload: %s", cleanText(got.Reason))
 	}
 
 	fmt.Fprintf(opts.out, "sent %s\n", humanBytes(n))

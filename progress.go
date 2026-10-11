@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"strings"
 	"time"
 	"unicode"
 )
@@ -68,6 +69,16 @@ func cleanText(s string) string {
 		}
 	}
 	return string(out)
+}
+
+// cleanMessage keeps diagnostic line breaks while removing terminal controls.
+func cleanMessage(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r != '\n' && !unicode.IsPrint(r) {
+			return '?'
+		}
+		return r
+	}, s)
 }
 
 func humanBytes(n int64) string {
