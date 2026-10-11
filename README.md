@@ -24,7 +24,7 @@ got 2.4 MB into ./report.pdf
 go install github.com/yavosh/woosh@latest
 ```
 
-Go 1.26 or later. Woosh has no dependencies outside the standard library.
+Go 1.27.2 or later. Woosh has no dependencies outside the standard library.
 
 ## Set up
 
