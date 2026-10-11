@@ -27,7 +27,7 @@ type recvOpts struct {
 	// addr skips discovery and dials this address. Tests use it.
 	addr string
 
-	key      []byte
+	auth     peerAuth
 	stdout   io.Writer
 	msg      io.Writer // messages for the user
 	toStdout bool
@@ -63,7 +63,7 @@ func cmdRecv(ctx context.Context, args []string) error {
 		code, rest = fs.Arg(0), fs.Args()[1:]
 	}
 
-	key, err := loadKey()
+	auth, err := loadPeerAuth(ctx)
 	if err != nil {
 		return err
 	}
@@ -74,7 +74,7 @@ func cmdRecv(ctx context.Context, args []string) error {
 		force:    *force,
 		limit:    *limit,
 		wait:     *wait,
-		key:      key,
+		auth:     auth,
 		stdout:   os.Stdout,
 		msg:      os.Stderr,
 		toStdout: *stdout,
@@ -87,6 +87,7 @@ func runRecv(ctx context.Context, opts recvOpts) (err error) {
 	if err != nil {
 		return err
 	}
+	fmt.Fprintf(opts.msg, "device: %s\nfingerprint: %s\n", opts.auth.name, opts.auth.localFingerprint)
 
 	if opts.wait <= 0 {
 		opts.wait = browseFor
@@ -104,10 +105,9 @@ func runRecv(ctx context.Context, opts recvOpts) (err error) {
 		fmt.Fprintf(opts.msg, "found an offer from %s at %s\n", cleanText(o.From), o.IP)
 	}
 
-	auth, err := newPeerAuth(opts.key, id)
-	if err != nil {
-		return err
-	}
+	auth := opts.auth
+	auth.offerID = id
+	auth.ctx = ctx
 
 	raw, err := dialOffer(ctx, addr, retryID, opts.wait)
 	if err != nil {
@@ -125,6 +125,9 @@ func runRecv(ctx context.Context, opts recvOpts) (err error) {
 
 	conn, err := auth.connect(tls.Client(raw, auth.clientConfig()))
 	if err != nil {
+		return err
+	}
+	if err := raw.SetDeadline(time.Now().Add(setupTimeout)); err != nil {
 		return err
 	}
 	confirm := func(got receipt) error {
@@ -163,7 +166,7 @@ func runRecv(ctx context.Context, opts recvOpts) (err error) {
 		return err
 	}
 
-	fmt.Fprintf(opts.msg, "receiving %s from %s\n", hdr.describe(), cleanText(hdr.From))
+	fmt.Fprintf(opts.msg, "receiving %s from %s\n", hdr.describe(), conn.peer.Name)
 
 	p := newProgress(opts.msg, hdr.Size, opts.silent)
 	n, err := recvPayload(io.MultiWriter(dst.w, p), conn.r, opts.limit)
@@ -244,7 +247,7 @@ func chooseOffer(offers []offer) (offer, error) {
 // network for another announce of the same offer, until wait runs out.
 //
 // Only a dial failure is worth another address. A handshake that fails means
-// the wrong key, and the same key is on the other end of every address.
+// an untrusted peer. Each new connection verifies the device identity.
 func dialOffer(ctx context.Context, addr, retryID string, wait time.Duration) (net.Conn, error) {
 	dialer := net.Dialer{Timeout: setupTimeout}
 	raw, err := dialer.DialContext(ctx, "tcp", addr)

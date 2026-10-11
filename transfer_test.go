@@ -68,8 +68,8 @@ func TestTransferSnippetToStdout(t *testing.T) {
 	var got bytes.Buffer
 
 	err := transfer(t,
-		sendOpts{key: key, code: "1-alpha-beta", stdin: strings.NewReader("hello woosh\n"), name: "snippet.txt"},
-		recvOpts{key: key, code: "1-alpha-beta", stdout: &got, toStdout: true},
+		sendOpts{auth: testAuth(t, key), code: "1-alpha-beta", stdin: strings.NewReader("hello woosh\n"), name: "snippet.txt"},
+		recvOpts{auth: testAuth(t, key), code: "1-alpha-beta", stdout: &got, toStdout: true},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -87,8 +87,8 @@ func TestTransferFile(t *testing.T) {
 
 	dest := t.TempDir()
 	err := transfer(t,
-		sendOpts{key: key, code: "2-gamma-delta", paths: []string{filepath.Join(src, "report.pdf")}},
-		recvOpts{key: key, code: "2-gamma-delta", out: dest},
+		sendOpts{auth: testAuth(t, key), code: "2-gamma-delta", paths: []string{filepath.Join(src, "report.pdf")}},
+		recvOpts{auth: testAuth(t, key), code: "2-gamma-delta", out: dest},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -119,8 +119,8 @@ func TestTransferDirectory(t *testing.T) {
 
 	dest := t.TempDir()
 	err := transfer(t,
-		sendOpts{key: key, code: "3-epsilon-zeta", paths: []string{filepath.Join(src, "notes")}},
-		recvOpts{key: key, code: "3-epsilon-zeta", out: dest},
+		sendOpts{auth: testAuth(t, key), code: "3-epsilon-zeta", paths: []string{filepath.Join(src, "notes")}},
+		recvOpts{auth: testAuth(t, key), code: "3-epsilon-zeta", out: dest},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -141,24 +141,24 @@ func TestTransferDirectory(t *testing.T) {
 	}
 }
 
-func TestTransferFailsWithWrongKey(t *testing.T) {
+func TestTransferFailsWithUntrustedIdentity(t *testing.T) {
 	err := transfer(t,
-		sendOpts{key: testKey(t), code: "4-eta-theta", stdin: strings.NewReader("secret")},
-		recvOpts{key: testKey(t), code: "4-eta-theta", stdout: io.Discard, toStdout: true},
+		sendOpts{auth: testAuth(t, testKey(t)), code: "4-eta-theta", stdin: strings.NewReader("secret")},
+		recvOpts{auth: testAuth(t, testKey(t)), code: "4-eta-theta", stdout: io.Discard, toStdout: true},
 	)
 	if err == nil {
-		t.Fatal("the transfer went through with a different key")
+		t.Fatal("the transfer went through with a untrusted identity")
 	}
 }
 
 func TestTransferFailsWithWrongCode(t *testing.T) {
 	key := testKey(t)
 	err := transfer(t,
-		sendOpts{key: key, code: "5-iota-kappa", stdin: strings.NewReader("secret")},
-		recvOpts{key: key, code: "5-iota-lambda", stdout: io.Discard, toStdout: true},
+		sendOpts{auth: testAuth(t, key), code: "5-iota-kappa", stdin: strings.NewReader("secret")},
+		recvOpts{auth: testAuth(t, key), code: "5-iota-lambda", stdout: io.Discard, toStdout: true},
 	)
-	if !errors.Is(err, errBadKey) {
-		t.Fatalf("error is %v, want errBadKey", err)
+	if !errors.Is(err, errWrongOffer) {
+		t.Fatalf("error is %v, want errWrongOffer", err)
 	}
 }
 
@@ -171,8 +171,8 @@ func TestRecvRefusesToOverwrite(t *testing.T) {
 	writeFile(t, filepath.Join(dest, "a.txt"), "old", 0o644)
 
 	err := transfer(t,
-		sendOpts{key: key, code: "6-mu-nu", paths: []string{filepath.Join(src, "a.txt")}},
-		recvOpts{key: key, code: "6-mu-nu", out: dest},
+		sendOpts{auth: testAuth(t, key), code: "6-mu-nu", paths: []string{filepath.Join(src, "a.txt")}},
+		recvOpts{auth: testAuth(t, key), code: "6-mu-nu", out: dest},
 	)
 	if err == nil {
 		t.Fatal("recv replaced a file without --force")
@@ -192,8 +192,8 @@ func TestRecvOverwritesWithForce(t *testing.T) {
 	writeFile(t, filepath.Join(dest, "a.txt"), "old", 0o644)
 
 	err := transfer(t,
-		sendOpts{key: key, code: "7-xi-omicron", paths: []string{filepath.Join(src, "a.txt")}},
-		recvOpts{key: key, code: "7-xi-omicron", out: dest, force: true},
+		sendOpts{auth: testAuth(t, key), code: "7-xi-omicron", paths: []string{filepath.Join(src, "a.txt")}},
+		recvOpts{auth: testAuth(t, key), code: "7-xi-omicron", out: dest, force: true},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -211,8 +211,8 @@ func TestRecvHonoursMaxSize(t *testing.T) {
 
 	dest := t.TempDir()
 	err := transfer(t,
-		sendOpts{key: key, code: "8-pi-rho", paths: []string{filepath.Join(src, "big.bin")}},
-		recvOpts{key: key, code: "8-pi-rho", out: dest, limit: 1000},
+		sendOpts{auth: testAuth(t, key), code: "8-pi-rho", paths: []string{filepath.Join(src, "big.bin")}},
+		recvOpts{auth: testAuth(t, key), code: "8-pi-rho", out: dest, limit: 1000},
 	)
 	if err == nil {
 		t.Fatal("recv took a payload above --max-size")
@@ -227,7 +227,7 @@ func TestRecvHonoursMaxSize(t *testing.T) {
 
 // TestSendSurvivesABadPeer is the reason a failed attempt does not end an
 // offer: the port is on the open network, so anyone can reach it, and a
-// stranger with the wrong key must not be able to end somebody else's send.
+// stranger with the untrusted identity must not be able to end somebody else's send.
 func TestSendSurvivesABadPeer(t *testing.T) {
 	good, bad := testKey(t), testKey(t)
 	src := t.TempDir()
@@ -240,7 +240,7 @@ func TestSendSurvivesABadPeer(t *testing.T) {
 	sendErr := make(chan error, 1)
 	go func() {
 		sendErr <- runSend(ctx, sendOpts{
-			key: good, code: "1-alpha-alpha", paths: []string{filepath.Join(src, "a.txt")},
+			auth: testAuth(t, good), code: "1-alpha-alpha", paths: []string{filepath.Join(src, "a.txt")},
 			out: io.Discard, silent: true, timeout: 15 * time.Second,
 			onReady: func(a net.Addr) { ready <- net.JoinHostPort("127.0.0.1", portOf(t, a)) },
 		})
@@ -253,14 +253,14 @@ func TestSendSurvivesABadPeer(t *testing.T) {
 		t.Fatalf("sender stopped before it was ready: %v", err)
 	}
 
-	stranger := runRecv(ctx, recvOpts{key: bad, addr: addr, code: "1-alpha-alpha",
+	stranger := runRecv(ctx, recvOpts{auth: testAuth(t, bad), addr: addr, code: "1-alpha-alpha",
 		stdout: io.Discard, toStdout: true, msg: io.Discard, silent: true})
 	if stranger == nil {
-		t.Fatal("a receiver with the wrong key was served")
+		t.Fatal("a receiver with the untrusted identity was served")
 	}
 
 	dest := t.TempDir()
-	if err := runRecv(ctx, recvOpts{key: good, addr: addr, code: "1-alpha-alpha",
+	if err := runRecv(ctx, recvOpts{auth: testAuth(t, good), addr: addr, code: "1-alpha-alpha",
 		out: dest, msg: io.Discard, silent: true}); err != nil {
 		t.Fatalf("the offer did not survive the stranger: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestSendSurvivesABadPeer(t *testing.T) {
 
 func TestSendKeepRejectsStdin(t *testing.T) {
 	err := runSend(context.Background(), sendOpts{
-		key: testKey(t), keep: true, stdin: strings.NewReader("x"), out: io.Discard,
+		auth: testAuth(t, testKey(t)), keep: true, stdin: strings.NewReader("x"), out: io.Discard,
 	})
 	if err == nil {
 		t.Error("--keep was accepted with no path")
@@ -288,7 +288,7 @@ func TestSendKeepRejectsStdin(t *testing.T) {
 
 func TestSendTimesOut(t *testing.T) {
 	err := runSend(context.Background(), sendOpts{
-		key: testKey(t), code: "9-sigma-tau", stdin: strings.NewReader("x"),
+		auth: testAuth(t, testKey(t)), code: "9-sigma-tau", stdin: strings.NewReader("x"),
 		out: io.Discard, timeout: 150 * time.Millisecond, silent: true,
 	})
 	if err == nil {

@@ -258,8 +258,8 @@ func TestArchiveCleanupFailureStillConfirmsDelivery(t *testing.T) {
 	var messages bytes.Buffer
 	key, code := testKey(t), "1-alpha-beta"
 	err := transfer(t,
-		sendOpts{key: key, code: code, paths: []string{filepath.Join(src, "a"), filepath.Join(src, "b")}},
-		recvOpts{key: key, code: code, out: dest, force: true, msg: &messages},
+		sendOpts{auth: testAuth(t, key), code: code, paths: []string{filepath.Join(src, "a"), filepath.Join(src, "b")}},
+		recvOpts{auth: testAuth(t, key), code: code, out: dest, force: true, msg: &messages},
 	)
 	if err != nil {
 		t.Fatal("post-commit cleanup failure rejected delivery:", err)
@@ -404,53 +404,43 @@ func TestAnnouncementRejectsNonHexID(t *testing.T) {
 	}
 }
 
-func TestKeyReplacementRestoresPrivatePermissions(t *testing.T) {
+func TestIdentityRejectsExposedPermissions(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix permissions")
 	}
 	tempHome(t)
-	path, err := keyPath()
+	path, err := configPath("identity")
 	if err != nil {
 		t.Fatal(err)
 	}
 	writeFile(t, path, "synthetic placeholder", 0o644)
-	if _, err := saveKey(make([]byte, keyLen)); err != nil {
-		t.Fatal(err)
+	if _, err := loadIdentity(""); err == nil {
+		t.Fatal("accepted an exposed identity file")
 	}
-	if perm := dirPerm(t, path); perm != 0o600 {
-		t.Fatalf("replacement key mode is %o, want 600", perm)
-	}
-	files, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".woosh-key-*"))
-	if err != nil || len(files) != 0 {
-		t.Fatalf("key staging files remain: %v, %v", files, err)
-	}
+	requireContent(t, path, "synthetic placeholder")
 }
 
-func TestKeyReplacementDoesNotFollowSymlink(t *testing.T) {
+func TestIdentityDoesNotFollowSymlink(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlinks need extra rights on windows")
 	}
 	tempHome(t)
-	path, err := keyPath()
+	path, err := configPath("identity")
 	if err != nil {
 		t.Fatal(err)
 	}
 	victim := filepath.Join(t.TempDir(), "unrelated.txt")
-	writeFile(t, victim, "unrelated data", 0o644)
+	writeFile(t, victim, "unrelated data", 0o600)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(victim, path); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := saveKey(make([]byte, keyLen)); err != nil {
-		t.Fatal(err)
+	if _, err := loadIdentity(""); err == nil {
+		t.Fatal("followed an identity symlink")
 	}
 	requireContent(t, victim, "unrelated data")
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
-		t.Fatalf("replacement is not a private regular file: %v", err)
-	}
 }
 
 func startTestSender(t *testing.T, opts sendOpts) (string, <-chan error, context.CancelFunc) {
@@ -491,7 +481,7 @@ func waitSender(t *testing.T, done <-chan error) error {
 
 func connectTestReceiver(t *testing.T, key []byte, code, addr string) (*authConn, net.Conn) {
 	t.Helper()
-	auth, err := newPeerAuth(key, offerID(code))
+	auth, err := newTestPeerAuth(t, key, offerID(code))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -527,7 +517,7 @@ func TestSendCancellationClosesActiveConnection(t *testing.T) {
 				body = make([]byte, 16<<20)
 			}
 			addr, done, cancel := startTestSender(t, sendOpts{
-				key: key, code: code, stdin: bytes.NewReader(body),
+				auth: testAuth(t, key), code: code, stdin: bytes.NewReader(body),
 			})
 			conn, _ := connectTestReceiver(t, key, code, addr)
 			if phase == "payload" {
@@ -555,7 +545,7 @@ func TestSendCancellationClosesBlockedInput(t *testing.T) {
 	defer w.Close()
 	started := make(chan struct{}, 1)
 	input := &startedReader{r, started}
-	addr, done, cancel := startTestSender(t, sendOpts{key: key, code: code, stdin: input})
+	addr, done, cancel := startTestSender(t, sendOpts{auth: testAuth(t, key), code: code, stdin: input})
 	connectTestReceiver(t, key, code, addr)
 	select {
 	case <-started:
@@ -571,7 +561,7 @@ func TestSendCancellationClosesBlockedInput(t *testing.T) {
 func TestRecvCancellationClosesBlockedOutput(t *testing.T) {
 	key, code := testKey(t), "1-alpha-beta"
 	addr, sendDone, stopSender := startTestSender(t, sendOpts{
-		key: key, code: code, stdin: bytes.NewReader(make([]byte, 16<<20)),
+		auth: testAuth(t, key), code: code, stdin: bytes.NewReader(make([]byte, 16<<20)),
 	})
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -586,7 +576,7 @@ func TestRecvCancellationClosesBlockedOutput(t *testing.T) {
 	recvDone := make(chan error, 1)
 	go func() {
 		recvDone <- runRecv(ctx, recvOpts{
-			key: key, code: code, addr: addr, stdout: output, toStdout: true, msg: io.Discard, silent: true,
+			auth: testAuth(t, key), code: code, addr: addr, stdout: output, toStdout: true, msg: io.Discard, silent: true,
 		})
 	}()
 	select {
@@ -632,7 +622,7 @@ func TestSenderRequiresDeliveryReceipt(t *testing.T) {
 	key, code := testKey(t), "1-alpha-beta"
 	var messages bytes.Buffer
 	addr, done, _ := startTestSender(t, sendOpts{
-		key: key, code: code, stdin: strings.NewReader("payload"), out: &messages,
+		auth: testAuth(t, key), code: code, stdin: strings.NewReader("payload"), out: &messages,
 	})
 	conn, raw := connectTestReceiver(t, key, code, addr)
 	if _, err := recvPayload(io.Discard, conn.r, 0); err != nil {
@@ -649,7 +639,7 @@ func TestSenderRequiresDeliveryReceipt(t *testing.T) {
 
 func TestReceiverSendsFailureReceiptForCorruption(t *testing.T) {
 	key, code := testKey(t), "1-alpha-beta"
-	auth, err := newPeerAuth(key, offerID(code))
+	auth, err := newTestPeerAuth(t, key, offerID(code))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -698,7 +688,7 @@ func TestReceiverSendsFailureReceiptForCorruption(t *testing.T) {
 	}()
 	dir := t.TempDir()
 	err = runRecv(t.Context(), recvOpts{
-		key: key, code: code, addr: ln.Addr().String(), out: dir, msg: io.Discard, silent: true,
+		auth: testAuth(t, key), code: code, addr: ln.Addr().String(), out: dir, msg: io.Discard, silent: true,
 	})
 	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("receiver did not reject corruption: %v", err)
@@ -722,7 +712,7 @@ func TestSenderReportsReceiverCommitFailure(t *testing.T) {
 	key, code := testKey(t), "1-alpha-beta"
 	var messages bytes.Buffer
 	addr, done, _ := startTestSender(t, sendOpts{
-		key: key, code: code, stdin: strings.NewReader("payload"), name: "report.txt", out: &messages,
+		auth: testAuth(t, key), code: code, stdin: strings.NewReader("payload"), name: "report.txt", out: &messages,
 	})
 	dir := t.TempDir()
 	target := filepath.Join(dir, "report.txt")
@@ -736,7 +726,7 @@ func TestSenderReportsReceiverCommitFailure(t *testing.T) {
 		return len(b), nil
 	})
 	err := runRecv(t.Context(), recvOpts{
-		key: key, code: code, addr: addr, out: dir, msg: msg, silent: true,
+		auth: testAuth(t, key), code: code, addr: addr, out: dir, msg: msg, silent: true,
 	})
 	if err == nil {
 		t.Fatal("receiver replaced a late arrival")
@@ -766,12 +756,12 @@ func (r *delayedReader) Read(b []byte) (int, error) {
 func TestOfferTimeoutAllowsActiveTransfer(t *testing.T) {
 	key, code := testKey(t), "1-alpha-beta"
 	addr, done, _ := startTestSender(t, sendOpts{
-		key: key, code: code, timeout: 100 * time.Millisecond,
+		auth: testAuth(t, key), code: code, timeout: 100 * time.Millisecond,
 		stdin: &delayedReader{r: strings.NewReader("payload")},
 	})
 	var received bytes.Buffer
 	if err := runRecv(t.Context(), recvOpts{
-		key: key, code: code, addr: addr, stdout: &received, toStdout: true, msg: io.Discard, silent: true,
+		auth: testAuth(t, key), code: code, addr: addr, stdout: &received, toStdout: true, msg: io.Discard, silent: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -824,9 +814,9 @@ func TestFileSinkQuotesReceivedPath(t *testing.T) {
 }
 
 func TestReceiverCancellationStopsPayloadRead(t *testing.T) {
-	key := make([]byte, keyLen) // Synthetic test material.
+	key := make([]byte, testSeedLen) // Synthetic test material.
 	id := offerID("review-cancel")
-	auth, err := newPeerAuth(key, id)
+	auth, err := newTestPeerAuth(t, key, id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -877,7 +867,7 @@ func TestReceiverCancellationStopsPayloadRead(t *testing.T) {
 			}
 			return n, err
 		})
-		recvDone <- runRecv(ctx, recvOpts{code: "review-cancel", addr: ln.Addr().String(), key: key, stdout: io.Discard, toStdout: true, msg: msg, silent: true})
+		recvDone <- runRecv(ctx, recvOpts{code: "review-cancel", addr: ln.Addr().String(), auth: testAuth(t, key), stdout: io.Discard, toStdout: true, msg: msg, silent: true})
 	}()
 	select {
 	case <-ready:
@@ -906,7 +896,7 @@ func TestReceiverCancellationStopsPayloadRead(t *testing.T) {
 	if err := <-serverDone; err != nil {
 		t.Fatal(err)
 	}
-	if strings.ContainsAny(messages.String(), "\x1b") || !strings.Contains(messages.String(), "bad?[2J?peer") {
+	if strings.ContainsAny(messages.String(), "\x1b") || !strings.Contains(messages.String(), "from test") {
 		t.Fatal("receiver printed a terminal escape")
 	}
 	if blocked {
@@ -920,7 +910,7 @@ func TestSenderTimeoutStopsUnauthenticatedPeer(t *testing.T) {
 	ready := make(chan string, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- runSend(ctx, sendOpts{key: make([]byte, keyLen), code: "review-timeout", stdin: bytes.NewReader(nil), out: io.Discard, silent: true, timeout: 100 * time.Millisecond, onReady: func(a net.Addr) {
+		done <- runSend(ctx, sendOpts{auth: testAuth(t, make([]byte, testSeedLen)), code: "review-timeout", stdin: bytes.NewReader(nil), out: io.Discard, silent: true, timeout: 100 * time.Millisecond, onReady: func(a net.Addr) {
 			_, port, _ := net.SplitHostPort(a.String())
 			ready <- net.JoinHostPort("127.0.0.1", port)
 		}})
@@ -945,18 +935,18 @@ func TestSenderTimeoutStopsUnauthenticatedPeer(t *testing.T) {
 }
 
 func TestSenderDoesNotReportRejectedPayloadAsSuccess(t *testing.T) {
-	key := make([]byte, keyLen)
+	key := make([]byte, testSeedLen)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	ready := make(chan string, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- runSend(ctx, sendOpts{key: key, code: "review-rejected", stdin: bytes.NewReader([]byte("too large")), out: io.Discard, silent: true, timeout: time.Second, onReady: func(a net.Addr) {
+		done <- runSend(ctx, sendOpts{auth: testAuth(t, key), code: "review-rejected", stdin: bytes.NewReader([]byte("too large")), out: io.Discard, silent: true, timeout: time.Second, onReady: func(a net.Addr) {
 			_, port, _ := net.SplitHostPort(a.String())
 			ready <- net.JoinHostPort("127.0.0.1", port)
 		}})
 	}()
-	err := runRecv(ctx, recvOpts{code: "review-rejected", addr: <-ready, key: key, stdout: io.Discard, toStdout: true, limit: 1, msg: io.Discard, silent: true})
+	err := runRecv(ctx, recvOpts{code: "review-rejected", addr: <-ready, auth: testAuth(t, key), stdout: io.Discard, toStdout: true, limit: 1, msg: io.Discard, silent: true})
 	if err == nil {
 		t.Fatal("receiver accepted an oversized payload")
 	}

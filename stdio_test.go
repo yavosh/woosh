@@ -26,7 +26,7 @@ func TestTransferProcess(t *testing.T) {
 	args := os.Args[separator+1:]
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	key, code := make([]byte, keyLen), "1-alpha-beta"
+	key, code := make([]byte, testSeedLen), "1-alpha-beta"
 	started := make(chan struct{}, 1)
 	go func() {
 		<-started
@@ -35,7 +35,7 @@ func TestTransferProcess(t *testing.T) {
 	err := runTransfer(ctx, func() error {
 		if args[0] == "send" {
 			return runSend(ctx, sendOpts{
-				key: key, code: code, stdin: &startedReader{os.Stdin, started},
+				auth: testAuth(t, key), code: code, stdin: &startedReader{os.Stdin, started},
 				out: io.Discard, silent: true,
 				onReady: func(a net.Addr) {
 					_, port, _ := net.SplitHostPort(a.String())
@@ -44,7 +44,7 @@ func TestTransferProcess(t *testing.T) {
 			})
 		}
 		return runRecv(ctx, recvOpts{
-			key: key, code: code, addr: args[1], toStdout: true,
+			auth: testAuth(t, key), code: code, addr: args[1], toStdout: true,
 			stdout: &startedWriter{os.Stdout, started}, msg: io.Discard, silent: true,
 		})
 	})
@@ -73,7 +73,7 @@ func TestInheritedStdioCancellation(t *testing.T) {
 			args := []string{"-test.run=^TestTransferProcess$", "--", mode}
 			if mode == "recv" {
 				addr, _, cancel := startTestSender(t, sendOpts{
-					key: make([]byte, keyLen), code: "1-alpha-beta",
+					auth: testAuth(t, make([]byte, testSeedLen)), code: "1-alpha-beta",
 					stdin: bytes.NewReader(make([]byte, 16<<20)),
 				})
 				defer cancel()
@@ -117,7 +117,7 @@ func TestInheritedStdioCancellation(t *testing.T) {
 				}
 			}
 			if mode == "send" {
-				connectTestReceiver(t, make([]byte, keyLen), "1-alpha-beta", nextLine())
+				connectTestReceiver(t, make([]byte, testSeedLen), "1-alpha-beta", nextLine())
 			}
 			if got := nextLine(); got != "blocked" {
 				t.Fatalf("unexpected child status %q", got)

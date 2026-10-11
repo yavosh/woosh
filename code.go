@@ -18,7 +18,7 @@ func newCode() (string, error) {
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", err
 	}
-	// The code selects an offer, it is not a secret. The network key gives the
+	// The code selects an offer, it is not a secret. Saved peer identities give the
 	// security, so a small modulo bias on the digit does no harm.
 	return fmt.Sprintf("%d-%s-%s", b[0]%10, words[b[1]], words[b[2]]), nil
 }

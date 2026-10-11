@@ -18,7 +18,7 @@ const (
 	mcastGroup = "239.255.42.99"
 	mcastPort  = 9977
 
-	announceVersion = 1
+	announceVersion = 2
 	announceEvery   = time.Second
 	// maxAnnounceLen caps a datagram. An announce is about 90 bytes.
 	maxAnnounceLen = 512
@@ -26,7 +26,7 @@ const (
 
 // announcement is what a waiting sender puts on the network. It holds no file
 // name and no size, because anything on the network can read it. The receiver
-// learns what is on offer only after both sides prove they hold the key.
+// learns what is on offer only after both sides confirm peer trust.
 type announcement struct {
 	V    int    `json:"v"`
 	ID   string `json:"id"`

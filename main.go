@@ -17,7 +17,7 @@ var version = "dev"
 const usage = `woosh - copy text snippets and files across the local network
 
 usage:
-  woosh init [--key KEY]        create or adopt the network key
+  woosh init [--name NAME]      create or show this device's identity
   woosh send [flags] [path...]  offer files, or a snippet from stdin
   woosh recv [flags] [code]     take an offer
   woosh ls                      list offers on the network

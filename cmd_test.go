@@ -10,7 +10,7 @@ import (
 // flags at the first plain argument, so "recv CODE -o dir" needs the extra
 // pass that cmdRecv makes.
 func TestRecvArgOrder(t *testing.T) {
-	t.Setenv(keyEnv, encodeKey(testKey(t)))
+	tempHome(t)
 
 	// Every form must reach the network and fail there, not fail on the flags.
 	// "no offer" is what a parsed command says when nothing answers.
@@ -37,7 +37,7 @@ func TestRecvArgOrder(t *testing.T) {
 }
 
 func TestSendRejectsFlagAfterPath(t *testing.T) {
-	t.Setenv(keyEnv, encodeKey(testKey(t)))
+	tempHome(t)
 
 	err := cmdSend(context.Background(), []string{"go.mod", "--keep"})
 	if err == nil || !strings.Contains(err.Error(), "before the paths") {

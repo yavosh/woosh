@@ -31,7 +31,7 @@ const (
 )
 
 // header describes an offer. The sender writes it once, after both sides prove
-// they hold the network key.
+// they trust each other's device identity.
 type header struct {
 	V    int    `json:"v"`
 	Kind string `json:"kind"`

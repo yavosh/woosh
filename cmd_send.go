@@ -29,7 +29,7 @@ type sendOpts struct {
 	timeout time.Duration
 	keep    bool
 
-	key    []byte
+	auth   peerAuth
 	stdin  io.Reader
 	out    io.Writer // messages for the user
 	silent bool      // no progress line
@@ -62,7 +62,7 @@ func cmdSend(ctx context.Context, args []string) error {
 		}
 	}
 
-	key, err := loadKey()
+	auth, err := loadPeerAuth(ctx)
 	if err != nil {
 		return err
 	}
@@ -73,7 +73,7 @@ func cmdSend(ctx context.Context, args []string) error {
 		name:     *name,
 		timeout:  *timeout,
 		keep:     *keep,
-		key:      key,
+		auth:     auth,
 		stdin:    os.Stdin,
 		out:      os.Stderr,
 		silent:   !isTerminal(os.Stderr),
@@ -104,10 +104,10 @@ func runSend(ctx context.Context, opts sendOpts) error {
 		return err
 	}
 
-	auth, err := newPeerAuth(opts.key, id)
-	if err != nil {
-		return err
-	}
+	auth := opts.auth
+	auth.offerID = id
+	auth.ctx = ctx
+	src.hdr.From = auth.name
 
 	ln, err := net.Listen("tcp", ":0")
 	if err != nil {
@@ -129,8 +129,7 @@ func runSend(ctx context.Context, opts sendOpts) error {
 	}()
 
 	if opts.announce {
-		host, _ := os.Hostname()
-		a := announcement{V: announceVersion, ID: id, Port: ln.Addr().(*net.TCPAddr).Port, From: host}
+		a := announcement{V: announceVersion, ID: id, Port: ln.Addr().(*net.TCPAddr).Port, From: auth.name}
 		if err := announce(ctx, a); err != nil {
 			return err
 		}
@@ -139,6 +138,7 @@ func runSend(ctx context.Context, opts sendOpts) error {
 		opts.onReady(ln.Addr())
 	}
 
+	fmt.Fprintf(opts.out, "device: %s\nfingerprint: %s\n", auth.name, auth.localFingerprint)
 	fmt.Fprintf(opts.out, "code: %s\n", code)
 	fmt.Fprintf(opts.out, "sending %s, waiting %s for a receiver...\n", src.hdr.describe(), opts.timeout)
 
@@ -173,7 +173,7 @@ func runSend(ctx context.Context, opts sendOpts) error {
 			return err
 		default:
 			// Nothing of the payload has gone. Anything on the network can
-			// reach this port, so a stranger with the wrong key must not be
+			// reach this port, so an untrusted device must not be
 			// able to end the offer. Report the attempt and wait for the next
 			// receiver.
 			fmt.Fprintf(opts.out, "woosh: %s\n", cleanMessage(err.Error()))
@@ -204,6 +204,9 @@ func serveOne(ctx, waiting context.Context, raw net.Conn, auth peerAuth, src *so
 
 	conn, err := auth.accept(tls.Server(raw, auth.serverConfig()))
 	if err != nil {
+		return false, err
+	}
+	if err := raw.SetDeadline(time.Now().Add(setupTimeout)); err != nil {
 		return false, err
 	}
 
