@@ -26,6 +26,24 @@ func TestKeyRoundTrip(t *testing.T) {
 	}
 }
 
+// TestShortPathHidesTheHome covers what init prints. The path comes from the
+// operating system and holds the user name.
+func TestShortPathHidesTheHome(t *testing.T) {
+	home := tempHome(t)
+
+	under := filepath.Join(home, "somewhere", "woosh", "key")
+	want := filepath.Join("~", "somewhere", "woosh", "key")
+	if got := shortPath(under); got != want {
+		t.Errorf("shortPath(%q) = %q, want %q", under, got, want)
+	}
+
+	// A path outside the home directory stays as it is.
+	outside := filepath.Join(string(filepath.Separator), "etc", "woosh", "key")
+	if got := shortPath(outside); got != outside {
+		t.Errorf("shortPath(%q) = %q, want it unchanged", outside, got)
+	}
+}
+
 func TestDecodeKeyIsForgiving(t *testing.T) {
 	k, err := newKey()
 	if err != nil {
