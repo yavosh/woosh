@@ -1,40 +1,34 @@
 package main
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/base32"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
-// keyLen is the size of the shared network key in bytes.
-const keyLen = 32
+type deviceIdentity struct {
+	Name string `json:"name"`
+	Seed []byte `json:"seed"`
+}
 
-// keyPrefix marks an encoded key so a user can recognise it in a paste buffer.
-const keyPrefix = "WSH-"
-
-// keyEnv overrides the key file. It exists for tests and for throwaway networks.
-const keyEnv = "WOOSH_KEY"
-
-var keyEnc = base32.StdEncoding.WithPadding(base32.NoPadding)
-
-var errNoKey = errors.New("no network key: run \"woosh init\" first")
-
-// keyPath returns the location of the network key file.
-func keyPath() (string, error) {
+func configPath(name string) (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "woosh", "key"), nil
+	return filepath.Join(dir, "woosh", name), nil
 }
 
-// shortPath names a path the way a person does, with the home directory as ~.
-// The configuration directory that the operating system chose holds the user
-// name, and that is nobody's business but the user's.
+// shortPath hides the home directory in messages.
 func shortPath(path string) string {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
@@ -47,98 +41,134 @@ func shortPath(path string) string {
 	return "~" + string(filepath.Separator) + rest
 }
 
-// newKey makes a random network key.
-func newKey() ([]byte, error) {
-	k := make([]byte, keyLen)
-	if _, err := rand.Read(k); err != nil {
+func validDeviceName(name string) bool {
+	if len(name) == 0 || len(name) > 255 {
+		return false
+	}
+	for _, c := range name {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '.' || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return name != "." && name != ".."
+}
+
+func (d deviceIdentity) publicKey() ed25519.PublicKey {
+	return ed25519.NewKeyFromSeed(d.Seed).Public().(ed25519.PublicKey)
+}
+
+func fingerprint(key ed25519.PublicKey) string {
+	sum := sha256.Sum256(key)
+	return "SHA256:" + base64.RawStdEncoding.EncodeToString(sum[:])
+}
+
+// loadIdentity creates an identity only when none exists. A concurrent creator wins safely.
+func loadIdentity(name string) (deviceIdentity, error) {
+	path, err := configPath("identity")
+	if err != nil {
+		return deviceIdentity{}, err
+	}
+	d, err := readIdentity(path)
+	if err == nil {
+		if name != "" && name != d.Name {
+			return deviceIdentity{}, fmt.Errorf("this device is already named %q", d.Name)
+		}
+		return d, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return deviceIdentity{}, err
+	}
+	requestedName := name
+	if name == "" {
+		name, err = os.Hostname()
+		if err != nil {
+			return deviceIdentity{}, err
+		}
+	}
+	if !validDeviceName(name) {
+		return deviceIdentity{}, errors.New("device names need 1–255 letters, digits, dots, hyphens, or underscores; use woosh init --name NAME")
+	}
+	seed := make([]byte, ed25519.SeedSize)
+	if _, err := rand.Read(seed); err != nil {
+		return deviceIdentity{}, err
+	}
+	d = deviceIdentity{Name: name, Seed: seed}
+	b, err := json.Marshal(d)
+	if err != nil {
+		return deviceIdentity{}, err
+	}
+	if err := createPrivateFile(path, b); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return loadIdentity(requestedName)
+		}
+		return deviceIdentity{}, err
+	}
+	return d, nil
+}
+
+func readIdentity(path string) (deviceIdentity, error) {
+	b, err := readPrivateFile(path)
+	if err != nil {
+		return deviceIdentity{}, err
+	}
+	var d deviceIdentity
+	if err := json.Unmarshal(b, &d); err != nil || !validDeviceName(d.Name) || len(d.Seed) != ed25519.SeedSize {
+		return deviceIdentity{}, errors.New("invalid device identity; refusing to replace it")
+	}
+	return d, nil
+}
+
+// Private files must be regular files. Unix files must have no group or other permissions.
+func readPrivateFile(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
 		return nil, err
 	}
-	return k, nil
-}
-
-// encodeKey writes a key as dash-separated groups, for example WSH-A3F9-C1D2-...
-func encodeKey(k []byte) string {
-	s := keyEnc.EncodeToString(k)
-	var b strings.Builder
-	b.WriteString(keyPrefix)
-	for i := 0; i < len(s); i += 4 {
-		if i > 0 {
-			b.WriteByte('-')
-		}
-		b.WriteString(s[i:min(i+4, len(s))])
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s must be a regular file", shortPath(path))
 	}
-	return b.String()
-}
-
-// parseKeyInput accepts either form a user can be handed: the word list, or
-// the base32 key. Two or more words can only be a word list, because a base32
-// key holds no spaces.
-func parseKeyInput(s string) ([]byte, error) {
-	if fields := strings.Fields(s); len(fields) > 1 {
-		return keyFromWords(fields)
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
+		return nil, fmt.Errorf("%s must have private permissions (chmod 600)", shortPath(path))
 	}
-	return decodeKey(s)
-}
-
-// decodeKey reads a key written by encodeKey. It ignores case and dashes. It
-// does not ignore spaces, so that parseKeyInput can tell the two forms apart.
-func decodeKey(s string) ([]byte, error) {
-	s = strings.ReplaceAll(strings.TrimSpace(s), "-", "")
-	s = strings.ToUpper(s)
-	s = strings.TrimPrefix(s, strings.TrimSuffix(keyPrefix, "-"))
-
-	k, err := keyEnc.DecodeString(s)
+	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("bad network key: %w", err)
+		return nil, err
 	}
-	if len(k) != keyLen {
-		return nil, fmt.Errorf("bad network key: got %d bytes, want %d", len(k), keyLen)
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil {
+		return nil, err
 	}
-	return k, nil
+	if !os.SameFile(info, opened) || !opened.Mode().IsRegular() || runtime.GOOS != "windows" && opened.Mode().Perm()&0o077 != 0 {
+		return nil, errors.New("configuration file changed while opening it")
+	}
+	const maxConfigSize = 4096
+	b, err := io.ReadAll(io.LimitReader(f, maxConfigSize+1))
+	if err == nil && len(b) > maxConfigSize {
+		return nil, errors.New("configuration file is too large")
+	}
+	return b, err
 }
 
-// saveKey writes the key to the config file. Only the owner can read it.
-func saveKey(k []byte) (string, error) {
-	path, err := keyPath()
-	if err != nil {
-		return "", err
-	}
+// createPrivateFile publishes a complete, private file without replacing any existing path.
+func createPrivateFile(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return "", err
+		return err
 	}
-	f, err := os.CreateTemp(filepath.Dir(path), ".woosh-key-*")
+	f, err := os.CreateTemp(filepath.Dir(path), ".woosh-config-*")
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer os.Remove(f.Name())
 	defer f.Close()
-	if _, err := f.WriteString(encodeKey(k) + "\n"); err != nil {
-		return "", err
+	if _, err := f.Write(data); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
 	}
 	if err := f.Close(); err != nil {
-		return "", err
+		return err
 	}
-	if err := os.Rename(f.Name(), path); err != nil {
-		return "", err
-	}
-	return path, nil
-}
-
-// loadKey reads the network key from WOOSH_KEY, or from the config file.
-func loadKey() ([]byte, error) {
-	if s := os.Getenv(keyEnv); s != "" {
-		return decodeKey(s)
-	}
-	path, err := keyPath()
-	if err != nil {
-		return nil, err
-	}
-	b, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, errNoKey
-	}
-	if err != nil {
-		return nil, err
-	}
-	return decodeKey(strings.TrimSpace(string(b)))
+	return os.Link(f.Name(), path)
 }

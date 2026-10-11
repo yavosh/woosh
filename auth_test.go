@@ -2,7 +2,11 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"io"
 	"net"
@@ -10,22 +14,43 @@ import (
 	"time"
 )
 
-// authPair runs accept and connect against each other over loopback TCP. It
-// returns the error each side saw. When both sides succeed it also passes a
-// short message from server to client, to prove no buffered byte was lost, and
-// returns what arrived.
-func authPair(t *testing.T, serverKey, clientKey []byte, serverID, clientID string) (got string, serverErr, clientErr error) {
+const testSeedLen = ed25519.SeedSize
+
+// testKey returns synthetic seed material. No fixture reads the user's configuration.
+func testKey(t *testing.T) []byte {
 	t.Helper()
+	seed := make([]byte, testSeedLen)
+	if _, err := rand.Read(seed); err != nil {
+		t.Fatal(err)
+	}
+	return seed
+}
 
-	sa, err := newPeerAuth(serverKey, serverID)
+func testAuth(t *testing.T, seed []byte) peerAuth {
+	t.Helper()
+	identity := deviceIdentity{Name: "test", Seed: seed}
+	expected := identity.publicKey()
+	auth, err := newPeerAuth(identity, func(_ context.Context, peer peerIdentity) error {
+		if !bytes.Equal(peer.Key, expected) {
+			return errPeerKeyChanged
+		}
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ca, err := newPeerAuth(clientKey, clientID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	return auth
+}
 
+func newTestPeerAuth(t *testing.T, seed []byte, id string) (peerAuth, error) {
+	auth := testAuth(t, seed)
+	auth.offerID = id
+	return auth, nil
+}
+
+// authPair runs mutual trust over loopback and checks the buffered payload boundary.
+func authPair(t *testing.T, sa, ca peerAuth) (got string, serverErr, clientErr error) {
+	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -73,93 +98,63 @@ func authPair(t *testing.T, serverKey, clientKey []byte, serverID, clientID stri
 	return got, serverErr, clientErr
 }
 
-func TestAuthSucceedsWithSameKey(t *testing.T) {
-	key := testKey(t)
-	got, serverErr, clientErr := authPair(t, key, key, "abc123", "abc123")
-	if serverErr != nil {
-		t.Fatalf("server: %v", serverErr)
-	}
-	if clientErr != nil {
-		t.Fatalf("client: %v", clientErr)
+func TestAuthSucceedsWithPinnedIdentity(t *testing.T) {
+	seed := testKey(t)
+	sa, _ := newTestPeerAuth(t, seed, "abc123")
+	ca, _ := newTestPeerAuth(t, seed, "abc123")
+	got, serverErr, clientErr := authPair(t, sa, ca)
+	if serverErr != nil || clientErr != nil {
+		t.Fatalf("authentication: server=%v client=%v", serverErr, clientErr)
 	}
 	if got != "payload follows the proof" {
 		t.Errorf("stream after auth gave %q", got)
 	}
 }
 
-func TestAuthFailsWithDifferentKey(t *testing.T) {
-	_, serverErr, clientErr := authPair(t, testKey(t), testKey(t), "abc123", "abc123")
-	if !errors.Is(serverErr, errBadKey) {
-		t.Errorf("server error is %v, want errBadKey", serverErr)
-	}
-	if clientErr == nil {
-		t.Error("the client accepted a peer with a different key")
+func TestAuthFailsWithChangedIdentity(t *testing.T) {
+	sa := testAuth(t, testKey(t))
+	ca := testAuth(t, testKey(t))
+	_, serverErr, clientErr := authPair(t, sa, ca)
+	if !errors.Is(serverErr, errPeerKeyChanged) || !errors.Is(clientErr, errPeerKeyChanged) {
+		t.Fatalf("changed keys: server=%v client=%v", serverErr, clientErr)
 	}
 }
 
 func TestAuthFailsWithDifferentOfferID(t *testing.T) {
-	key := testKey(t)
-	_, serverErr, clientErr := authPair(t, key, key, "abc123", "def456")
-	if !errors.Is(serverErr, errBadKey) {
-		t.Errorf("server error is %v, want errBadKey", serverErr)
+	seed := testKey(t)
+	sa, _ := newTestPeerAuth(t, seed, "abc123")
+	ca, _ := newTestPeerAuth(t, seed, "def456")
+	calls := 0
+	sa.verify = func(context.Context, peerIdentity) error { calls++; return nil }
+	_, serverErr, clientErr := authPair(t, sa, ca)
+	if !errors.Is(serverErr, errWrongOffer) || !errors.Is(clientErr, errWrongOffer) {
+		t.Fatalf("wrong offer: server=%v client=%v", serverErr, clientErr)
 	}
-	if clientErr == nil {
-		t.Error("the client accepted a proof for another offer")
-	}
-}
-
-func TestTranscriptBindsBothCertificates(t *testing.T) {
-	sc, cc := []byte("server-cert"), []byte("client-cert")
-	base := transcript(sc, cc, "abc123")
-
-	if bytes.Equal(base, transcript([]byte("other"), cc, "abc123")) {
-		t.Error("the transcript ignores the server certificate")
-	}
-	if bytes.Equal(base, transcript(sc, []byte("other"), "abc123")) {
-		t.Error("the transcript ignores the client certificate")
-	}
-	if bytes.Equal(base, transcript(cc, sc, "abc123")) {
-		t.Error("the transcript does not separate the two roles")
-	}
-	if bytes.Equal(base, transcript(sc, cc, "def456")) {
-		t.Error("the transcript ignores the offer id")
+	if calls != 0 {
+		t.Fatal("asked for trust before checking the offer")
 	}
 }
 
-func TestProofSeparatesRoles(t *testing.T) {
-	key, tr := testKey(t), []byte("transcript")
-	nc, ns := []byte("nonce-c"), []byte("nonce-s")
-
-	if bytes.Equal(proof(key, labelClient, tr, nc, ns), proof(key, labelServer, tr, nc, ns)) {
-		t.Error("the client and server proofs are the same, one could be replayed as the other")
-	}
-	if bytes.Equal(proof(key, labelClient, tr, nc, ns), proof(key, labelClient, tr, ns, nc)) {
-		t.Error("the proof does not separate the two nonces")
-	}
-	if bytes.Equal(proof(key, labelClient, tr, nc, ns), proof(testKey(t), labelClient, tr, nc, ns)) {
-		t.Error("the proof does not depend on the key")
-	}
-}
-
-func TestEphemeralCertsDiffer(t *testing.T) {
-	a, err := newEphemeralCert()
+func TestRenewedCertificateRetainsPublicKey(t *testing.T) {
+	identity := deviceIdentity{Name: "device", Seed: testKey(t)}
+	a, err := newIdentityCert(identity)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := newEphemeralCert()
+	b, err := newIdentityCert(identity)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if bytes.Equal(a.Certificate[0], b.Certificate[0]) {
-		t.Error("two processes would use the same certificate")
+		t.Fatal("certificates did not renew")
 	}
-}
-
-func testKey(t *testing.T) []byte {
-	t.Helper()
-	k, err := newKey()
-	if err != nil {
-		t.Fatal(err)
+	for _, cert := range []tls.Certificate{a, b} {
+		leaf, err := x509.ParseCertificate(cert.Certificate[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(leaf.PublicKey.(ed25519.PublicKey), identity.publicKey()) || leaf.Subject.CommonName != identity.Name {
+			t.Fatal("certificate changed the identity")
+		}
 	}
-	return k
 }

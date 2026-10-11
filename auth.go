@@ -2,172 +2,163 @@ package main
 
 import (
 	"bufio"
-	"crypto/hmac"
-	"crypto/rand"
-	"crypto/sha256"
+	"context"
+	"crypto/ed25519"
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"io"
+	"time"
 )
 
 const (
-	labelClient = "woosh-client-v1"
-	labelServer = "woosh-server-v1"
-	nonceLen    = 32
+	authVersion  = 1
+	trustTimeout = 5 * time.Minute
 )
 
-// errBadKey means the peer could not prove it holds the same network key.
-var errBadKey = errors.New("the peer does not hold this network key")
+var errWrongOffer = errors.New("the peer selected a different offer")
 
-// authConn is a TLS connection whose peer has proven it holds the network key.
 // Read through r, not through Conn, so no buffered byte is lost.
 type authConn struct {
 	*tls.Conn
-	r *bufio.Reader
+	r    *bufio.Reader
+	peer peerIdentity
 }
 
-// peerAuth holds what both sides need to prove themselves to each other.
 type peerAuth struct {
-	key     []byte
-	offerID string
-	cert    tls.Certificate
+	cert             tls.Certificate
+	name             string
+	localFingerprint string
+	offerID          string
+	ctx              context.Context
+	verify           func(context.Context, peerIdentity) error
 }
 
-func newPeerAuth(key []byte, offerID string) (peerAuth, error) {
-	cert, err := newEphemeralCert()
+func newPeerAuth(d deviceIdentity, verify func(context.Context, peerIdentity) error) (peerAuth, error) {
+	if !validDeviceName(d.Name) || len(d.Seed) != ed25519.SeedSize || verify == nil {
+		return peerAuth{}, errors.New("invalid local identity or trust configuration")
+	}
+	cert, err := newIdentityCert(d)
 	if err != nil {
 		return peerAuth{}, err
 	}
-	return peerAuth{key: key, offerID: offerID, cert: cert}, nil
+	return peerAuth{cert: cert, name: d.Name, localFingerprint: fingerprint(d.publicKey()), ctx: context.Background(), verify: verify}, nil
 }
 
-// serverConfig and clientConfig deliberately skip certificate verification.
-// The certificates are throwaway and carry no trusted identity. accept and
-// connect supply the identity, with a proof that is bound to these exact
-// certificates.
-func (a peerAuth) serverConfig() *tls.Config {
-	return &tls.Config{
-		Certificates: []tls.Certificate{a.cert},
-		MinVersion:   tls.VersionTLS13,
-		ClientAuth:   tls.RequireAnyClientCert,
+func loadPeerAuth(ctx context.Context) (peerAuth, error) {
+	d, err := loadIdentity("")
+	if err != nil {
+		return peerAuth{}, err
 	}
+	dir, err := configPath("known_peers")
+	if err != nil {
+		return peerAuth{}, err
+	}
+	store := peerTrust{dir: dir, confirm: confirmPeer}
+	auth, err := newPeerAuth(d, store.verify)
+	auth.ctx = ctx
+	return auth, err
+}
+
+// TLS proves possession of both private keys. finish pins the public keys before application data flows.
+func (a peerAuth) serverConfig() *tls.Config {
+	return &tls.Config{Certificates: []tls.Certificate{a.cert}, MinVersion: tls.VersionTLS13, ClientAuth: tls.RequireAnyClientCert}
 }
 
 func (a peerAuth) clientConfig() *tls.Config {
 	return &tls.Config{
 		Certificates:       []tls.Certificate{a.cert},
 		MinVersion:         tls.VersionTLS13,
-		InsecureSkipVerify: true,
+		InsecureSkipVerify: true, // finish verifies the peer's pinned public key.
 	}
 }
 
-// accept completes the handshake on the listening side and checks the client.
-// It answers with its own proof only after the client has proven itself.
-func (a peerAuth) accept(conn *tls.Conn) (*authConn, error) {
-	peerCert, err := handshake(conn)
-	if err != nil {
-		return nil, err
-	}
-	tr := transcript(a.cert.Certificate[0], peerCert, a.offerID)
-	r := bufio.NewReader(conn)
-
-	nc := make([]byte, nonceLen)
-	if _, err := io.ReadFull(r, nc); err != nil {
-		return nil, err
-	}
-	ns, err := newNonce()
-	if err != nil {
-		return nil, err
-	}
-	if _, err := conn.Write(ns); err != nil {
-		return nil, err
-	}
-
-	got := make([]byte, sha256.Size)
-	if _, err := io.ReadFull(r, got); err != nil {
-		return nil, err
-	}
-	if !hmac.Equal(got, proof(a.key, labelClient, tr, nc, ns)) {
-		return nil, errBadKey
-	}
-	if _, err := conn.Write(proof(a.key, labelServer, tr, nc, ns)); err != nil {
-		return nil, err
-	}
-	return &authConn{Conn: conn, r: r}, nil
+type authHello struct {
+	V  int    `json:"auth"`
+	ID string `json:"offer"`
 }
 
-// connect completes the handshake on the dialling side and checks the server.
-func (a peerAuth) connect(conn *tls.Conn) (*authConn, error) {
-	peerCert, err := handshake(conn)
-	if err != nil {
-		return nil, err
-	}
-	tr := transcript(peerCert, a.cert.Certificate[0], a.offerID)
-	r := bufio.NewReader(conn)
+func (a peerAuth) accept(conn *tls.Conn) (*authConn, error)  { return a.finish(conn, false) }
+func (a peerAuth) connect(conn *tls.Conn) (*authConn, error) { return a.finish(conn, true) }
 
-	nc, err := newNonce()
-	if err != nil {
-		return nil, err
-	}
-	if _, err := conn.Write(nc); err != nil {
-		return nil, err
-	}
-	ns := make([]byte, nonceLen)
-	if _, err := io.ReadFull(r, ns); err != nil {
-		return nil, err
-	}
-
-	if _, err := conn.Write(proof(a.key, labelClient, tr, nc, ns)); err != nil {
-		return nil, err
-	}
-	got := make([]byte, sha256.Size)
-	if _, err := io.ReadFull(r, got); err != nil {
-		// The server closes the connection when our proof is wrong, which is
-		// the usual reason this read fails.
-		return nil, errBadKey
-	}
-	if !hmac.Equal(got, proof(a.key, labelServer, tr, nc, ns)) {
-		return nil, errBadKey
-	}
-	return &authConn{Conn: conn, r: r}, nil
-}
-
-// handshake runs the TLS handshake and returns the peer's certificate bytes.
-func handshake(conn *tls.Conn) ([]byte, error) {
+func (a peerAuth) finish(conn *tls.Conn, client bool) (*authConn, error) {
 	if err := conn.Handshake(); err != nil {
-		return nil, fmt.Errorf("tls handshake: %w", err)
+		return nil, fmt.Errorf("tls handshake: %w (both machines need a version supporting device trust)", err)
 	}
 	certs := conn.ConnectionState().PeerCertificates
-	if len(certs) == 0 {
-		return nil, errors.New("the peer sent no certificate")
+	if len(certs) != 1 {
+		return nil, errors.New("the peer must send one identity certificate")
 	}
-	return certs[0].Raw, nil
-}
-
-// transcript binds a proof to this TLS session and to this offer. A machine in
-// the middle terminates TLS with its own certificates, so its transcript
-// differs and its proof does not verify.
-func transcript(serverCert, clientCert []byte, offerID string) []byte {
-	s := sha256.Sum256(serverCert)
-	c := sha256.Sum256(clientCert)
-	out := make([]byte, 0, len(s)+len(c)+len(offerID))
-	out = append(out, s[:]...)
-	out = append(out, c[:]...)
-	return append(out, offerID...)
-}
-
-func proof(key []byte, label string, tr, nc, ns []byte) []byte {
-	m := hmac.New(sha256.New, key)
-	m.Write([]byte(label)) // labelClient and labelServer are the same length
-	m.Write(tr)
-	m.Write(nc)
-	m.Write(ns)
-	return m.Sum(nil)
-}
-
-func newNonce() ([]byte, error) {
-	n := make([]byte, nonceLen)
-	_, err := rand.Read(n)
-	return n, err
+	cert := certs[0]
+	key, ok := cert.PublicKey.(ed25519.PublicKey)
+	if !ok || !validDeviceName(cert.Subject.CommonName) {
+		return nil, errors.New("the peer sent an invalid device identity; upgrade both machines")
+	}
+	if err := cert.CheckSignature(cert.SignatureAlgorithm, cert.RawTBSCertificate, cert.Signature); err != nil {
+		return nil, errors.New("the peer sent an invalid identity certificate signature")
+	}
+	peer := peerIdentity{Name: cert.Subject.CommonName, Key: key, Addr: conn.RemoteAddr().String()}
+	r := bufio.NewReader(conn)
+	hello := authHello{V: authVersion, ID: a.offerID}
+	var got authHello
+	// The client writes first. Sending the offer ID on this TLS session binds it to these identities.
+	if client {
+		if err := writeJSONLine(conn, hello); err != nil {
+			return nil, err
+		}
+	}
+	if err := readJSONLine(r, &got); err != nil {
+		return nil, err
+	}
+	if !client {
+		if err := writeJSONLine(conn, hello); err != nil {
+			return nil, err
+		}
+	}
+	if got.V != authVersion {
+		return nil, errors.New("peer authentication version mismatch; upgrade both machines")
+	}
+	if got.ID != a.offerID {
+		return nil, errWrongOffer
+	}
+	if err := conn.SetDeadline(time.Now().Add(trustTimeout)); err != nil {
+		return nil, err
+	}
+	ctx, timeout := context.WithTimeout(a.ctx, trustTimeout)
+	defer timeout()
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	approved := make(chan error, 1)
+	go func() {
+		var approval reply
+		err := readJSONLine(r, &approval)
+		if err != nil {
+			err = fmt.Errorf("peer trust was not confirmed: %w", err)
+		} else if !approval.Accept {
+			err = errors.New("the other device did not trust this device")
+		}
+		approved <- err
+		if err != nil {
+			cancel(err) // A disconnected or declining peer must not leave a prompt open.
+		}
+	}()
+	err := a.verify(ctx, peer)
+	if err != nil {
+		writeJSONLine(conn, reply{Accept: false})
+		if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+			return nil, context.Cause(ctx)
+		}
+		return nil, err
+	}
+	if err := writeJSONLine(conn, reply{Accept: true}); err != nil {
+		return nil, err
+	}
+	select {
+	case err := <-approved:
+		if err != nil {
+			return nil, err
+		}
+	case <-ctx.Done():
+		return nil, context.Cause(ctx)
+	}
+	return &authConn{Conn: conn, r: r, peer: peer}, nil
 }

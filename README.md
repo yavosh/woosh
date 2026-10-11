@@ -8,15 +8,21 @@ straight from one machine to the other over TLS.
 ```
 # machine A
 $ woosh send ./report.pdf
+device: studio
+fingerprint: SHA256:...
 code: 7-canyon-otter
 sending report.pdf (2.4 MB), waiting 5m0s for a receiver...
 
 # machine B
 $ woosh recv 7-canyon-otter
+device: laptop
+fingerprint: SHA256:...
 found an offer from studio at 192.168.1.24
 receiving report.pdf (2.4 MB) from studio
 got 2.4 MB into ./report.pdf
 ```
+
+First contact asks both machines to confirm and remember the peer's public key.
 
 ## Install
 
@@ -28,79 +34,49 @@ Go 1.27.2 or later. Woosh has no dependencies outside the standard library.
 
 ## Set up
 
-Every machine in your woosh network shares one key. Pick whichever of these three suits you.
-They are three ways to reach the same 32-byte key, not three kinds of key.
+Each device has its own persistent Ed25519 identity. Shared network keys are no longer required.
+`send` and `recv` create an identity automatically when needed.
 
-**Eight words, to read out or type over.** This is what plain `woosh init` gives. Easier to
-get right than 52 base32 characters:
+Run `woosh init` to create an identity or display its public fingerprint:
 
-```
-$ woosh init
-network key saved to <config dir>/woosh/key
-
-  oak depend diary forum
-  ill become become lawsuit
-
-type these on your other machines:
-  woosh init --key "oak depend diary forum ill become become lawsuit"
-
-keep them secret: they are the only thing that guards a transfer.
+```sh
+woosh init
 ```
 
-**A passphrase, with nothing to copy.** Run the same command on every machine and type the
-same phrase:
+The device name defaults to the hostname. Choose a unique name before your first transfer if hostnames overlap:
 
-```
-$ woosh init --passphrase
-type the same passphrase on every machine in your woosh network.
-it needs 12 characters or more.
-
-passphrase:
-passphrase again:
-deriving the key, this takes a moment...
-network key saved to <config dir>/woosh/key
+```sh
+woosh init --name studio
 ```
 
-The phrase never leaves the machine and is never stored. What is typed does not appear on
-screen. Woosh asks twice, because a typo here gives you a key nobody else can reach.
+On first contact, **both machines** show the other device's name and public fingerprint:
 
-**The base32 key**, which is what a password manager or a config-management tool wants:
-
-```
-$ woosh init --raw
-  WSH-PDAL-FKTV-CSZN-...
-$ woosh init --key WSH-PDAL-FKTV-CSZN-...   # on the others
+```text
+Unknown device "studio" at 192.168.1.24:54321.
+ED25519 fingerprint: SHA256:...
+Compare this fingerprint with "woosh init" on that device.
+Trust this device and save its public key? (yes/no):
 ```
 
-`--key` takes either form, so you can paste words or base32 and it works out which it is.
+Compare each fingerprint with the fingerprint printed on the other machine.
+Type `yes` on both machines to save trust and start the transfer.
+Subsequent transfers verify the saved public keys without asking again, including transfers in the opposite direction.
 
-The key is the only thing that guards a transfer. Keep it secret.
+Confirmation reads from the controlling terminal. It does not consume snippet stdin or write into payload stdout.
+Without a terminal, an unknown device is rejected. Previously trusted devices work in scripts.
+Confirmation times out after five minutes. Typing anything except `yes` declines trust.
 
-The key file goes under the directory your operating system keeps program configuration in.
-Woosh does not pick a path of its own, and `woosh init` prints the one it used.
+The identity file and `known_peers` directory live under your operating system's configuration directory, inside `woosh`.
+On Unix, these files use mode `0600`, and new configuration directories use mode `0700`.
+`woosh init` prints the identity path.
+Never copy the identity file between machines. It contains the device's private key.
 
-`WOOSH_KEY` overrides the key file when it is set, which is useful for a throwaway network
-or for a script. `woosh init --passphrase` also reads a piped phrase, so setup can be scripted:
+Trust binds a device name to its public key. If the key changes, Woosh blocks the connection without replacing saved trust.
+A device with a new name requires a new confirmation.
+For an intentional key replacement, verify the new fingerprint before removing the known-peer file named in the error.
 
-```
-$ echo "$PHRASE" | woosh init --passphrase
-```
-
-### Which one to pick
-
-|  | Nothing to copy | Strength | Good for |
-|---|---|---|---|
-| words (the default) | no, 8 words | 88 bits | reading down a phone, typing on a laptop |
-| `--passphrase` | yes | as strong as the phrase | machines you set up by hand |
-| `--raw` | no, 52 characters | 256 bits | password managers, scripts, config management |
-
-A passphrase is stretched with PBKDF2-HMAC-SHA256 at 4,000,000 rounds. The salt has to be a
-constant, or two machines could never agree from the phrase alone, so that round count is the
-only thing standing between a weak phrase and a precomputed table. Pick a real passphrase, not
-a password. The 12-character floor is a guard against slips, not a measure of strength.
-
-The words come from the BIP-39 English list, whose entries are unique in their first four
-letters, so a misspelling is caught rather than silently accepted as a different key.
+Upgrade both machines. Older shared-key versions cannot connect to this protocol.
+Existing network-key files are left untouched. `WOOSH_KEY`, `--key`, `--raw`, and `--passphrase` are no longer used.
 
 ## Use
 
@@ -152,10 +128,7 @@ need the code for that.
 
 | Flag | Command | What it does |
 |---|---|---|
-| `--passphrase` | init | derive the key from a phrase typed on every machine |
-| `--raw` | init | make a key and show it as base32 instead of words |
-| `--key` | init | adopt a key, as words or as base32 |
-| `--force` | init | replace a key that is already there |
+| `--name` | init | choose a unique device name when creating an identity |
 | `--code` | send | use a code you choose |
 | `--name` | send | the file name to give a snippet from stdin |
 | `--timeout` | send | give up if nobody comes, 5m by default |
@@ -177,10 +150,11 @@ Run `recv --wait 30s` when you want to start the receiver before the sender.
    code, so the code itself never goes on the network.
 2. `recv` listens on the same group and matches the offer id. It takes the sender's address
    from the datagram itself, never from a field inside it.
-3. Both sides make a throwaway certificate and run TLS 1.3.
-4. Both sides prove they hold the network key, with an HMAC over the two certificate hashes
-   and the offer id. A machine in the middle terminates TLS with its own certificates, so its
-   proof does not verify and the transfer stops.
+3. Both sides run TLS 1.3 with certificates backed by their persistent Ed25519 identities.
+   TLS proves possession of each private key.
+4. The peers exchange authentication versions and offer IDs inside TLS.
+   Each side checks saved trust or requests first-use confirmation.
+   Both sides must approve before payload metadata or bytes are sent.
 5. The sender describes the payload, the receiver accepts, and the bytes flow as
    length-prefixed chunks with a SHA-256 at the end.
 6. Files stay in unique `.woosh-partial-*` staging paths until the checksum matches.
@@ -189,9 +163,8 @@ Run `recv --wait 30s` when you want to start the receiver before the sender.
    directory for recovery. Several archive entries cannot appear atomically as one update.
    Stdout streams bytes before checksum verification.
 7. The receiver confirms delivery after verification and publication. The sender reports
-   success only after this receipt. Both peers must support wire version 2; older builds
-   fail with a version mismatch. A lost receipt leaves delivery unconfirmed even if the
-   receiver committed the files.
+   success only after this receipt. Both peers must support device trust and wire version 2.
+   A lost receipt leaves delivery unconfirmed even if the receiver committed the files.
 
 Archive publication and file publication without overwriting require hard-link support on the destination filesystem.
 Publication errors identify retained recovery paths when rollback cannot complete.
@@ -211,16 +184,11 @@ Inspect these paths for recovery before removing them.
 - Accept sparse archive encodings. Receivers reject them to prevent disk expansion beyond
   the transferred payload. `--max-size` limits transferred bytes.
 - Resume an interrupted transfer.
-- Tell your machines apart. One shared key means every machine that holds it is equally
-  trusted.
 
 ## Code
 
 Simple idiomatic Go, more code less libraries. One flat `package main`, standard library only.
-Key derivation uses `crypto/pbkdf2` and `crypto/hkdf`, both of which the standard library has
-carried since Go 1.24.
-
-`bip39.txt` is the BIP-39 English word list, embedded with `go:embed`. It is data, not code.
+Device identities use `crypto/ed25519`. TLS certificates renew while the identity public key stays stable.
 
 ```
 make            # build
