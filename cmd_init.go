@@ -44,7 +44,7 @@ func cmdInit(args []string) error {
 		return err
 	}
 	if _, err := os.Stat(path); err == nil && !*force {
-		return fmt.Errorf("a network key is already at %s (use --force to replace it)", path)
+		return fmt.Errorf("a network key is already at %s (use --force to replace it)", shortPath(path))
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -74,7 +74,7 @@ func cmdInit(args []string) error {
 	if _, err := saveKey(key); err != nil {
 		return err
 	}
-	fmt.Printf("network key saved to %s\n", path)
+	fmt.Printf("network key saved to %s\n", shortPath(path))
 
 	switch {
 	case *adopt != "":
